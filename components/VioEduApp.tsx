@@ -1,0 +1,1026 @@
+"use client";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, Clock3, ExternalLink,
+  Home, LogOut, Pencil, Plus, Settings, Trash2, UsersRound, WifiOff,
+} from "lucide-react";
+import { motion } from "framer-motion";
+import { supabase } from "../lib-supabase-client";
+import {
+  WEEKDAYS, addDays, addMonths, dateKey, dateLabel, endOf, fmt12, minutesOf,
+  monthLabel, monthWeeks, pad, to12, to24, weekDays, weekLabel,
+} from "./lib-time";
+import { ConfirmDialog, ConfirmState, EmptyState, RowMenu, Sheet, Skeleton, Toast, ToastStack } from "./ui";
+
+type Group = { id: string; name: string; owner_id: string };
+type Member = { id: string; group_id: string; name: string };
+type Session = {
+  id: number; date: string; memberId: string | null;
+  memberName: string; time: string; duration: number; done: boolean;
+};
+type Tab = "home" | "people" | "stats" | "settings";
+type OAuthProvider = "google" | "facebook";
+
+const OAUTH: { id: OAuthProvider; label: string }[] = [
+  { id: "google", label: "Google" },
+  { id: "facebook", label: "Facebook" },
+];
+
+const TABS: { id: Tab; icon: typeof Home; label: string }[] = [
+  { id: "home", icon: Home, label: "Lịch" },
+  { id: "people", icon: UsersRound, label: "Thành viên" },
+  { id: "stats", icon: CalendarDays, label: "Tiến độ" },
+  { id: "settings", icon: Settings, label: "Cài đặt" },
+];
+const TAB_TITLE: Record<Tab, string> = { home: "Lịch học", people: "Thành viên", stats: "Tiến độ", settings: "Cài đặt" };
+const DURATIONS = [20, 30, 45, 60, 90];
+/** New schedules open at 07:00, so the picker shows AM by default. */
+const DEFAULT_TIME = "07:00";
+const SCHEDULE_COLS = "id,student_name,study_date,start_time,duration,done,member_id,group_members(name)";
+
+const field = "w-full rounded-2xl border border-slate-200 bg-white p-3 text-slate-900 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100";
+const primaryBtn = "min-h-[48px] w-full rounded-2xl bg-indigo-600 px-4 font-bold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50";
+
+/** Hour / minute / AM-PM selects. AM is always listed before PM, unlike the
+ *  browser's native time input where the order follows the current value. */
+function TimePicker({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const v = to12(value);
+  const cell = `${field} text-center font-semibold`;
+  return (
+    <div className="grid grid-cols-3 gap-2">
+      <select aria-label="Giờ" className={cell} value={v.h} onChange={(e) => onChange(to24(+e.target.value, v.m, v.ap))}>
+        {Array.from({ length: 12 }, (_, i) => i + 1).map((h) => <option key={h} value={h}>{pad(h)}</option>)}
+      </select>
+      <select aria-label="Phút" className={cell} value={v.m} onChange={(e) => onChange(to24(v.h, +e.target.value, v.ap))}>
+        {Array.from({ length: 60 }, (_, i) => i).map((m) => <option key={m} value={m}>{pad(m)}</option>)}
+      </select>
+      <select aria-label="Buổi" className={cell} value={v.ap} onChange={(e) => onChange(to24(v.h, v.m, e.target.value))}>
+        <option value="AM">AM</option>
+        <option value="PM">PM</option>
+      </select>
+    </div>
+  );
+}
+
+export default function VioEduApp() {
+  const today = useMemo(() => new Date(), []);
+  const [selectedDate, setSelectedDate] = useState(today);
+  const [tab, setTab] = useState<Tab>("home");
+  const [calView, setCalView] = useState<"week" | "month">("week");
+  const [online, setOnline] = useState(true);
+
+  const [authReady, setAuthReady] = useState(false);
+  const [userId, setUserId] = useState("");
+  const [userEmail, setUserEmail] = useState("");
+  const [userName, setUserName] = useState("");
+  const [userAvatar, setUserAvatar] = useState("");
+  const [userProviders, setUserProviders] = useState<string[]>([]);
+  const [authMode, setAuthMode] = useState<"login" | "signup">("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
+  const [oauthBusy, setOauthBusy] = useState<OAuthProvider | null>(null);
+
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [groupId, setGroupId] = useState("");
+  const [members, setMembers] = useState<Member[]>([]);
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [memberCounts, setMemberCounts] = useState<Record<string, number>>({});
+  const [groupsLoading, setGroupsLoading] = useState(true);
+  const [dataLoading, setDataLoading] = useState(false);
+  const [loadError, setLoadError] = useState("");
+
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [confirm, setConfirm] = useState<ConfirmState>(null);
+  const [confirmBusy, setConfirmBusy] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const [showGroupPicker, setShowGroupPicker] = useState(false);
+  const [groupForm, setGroupForm] = useState<{ mode: "create" | "rename"; id?: string; name: string } | null>(null);
+  const [memberForm, setMemberForm] = useState<{ id: string | null; name: string } | null>(null);
+  const [scheduleForm, setScheduleForm] = useState<{ id: number | null; memberId: string; time: string; duration: number } | null>(null);
+
+  /** Guards against a slow response for group A landing after the user switched to B. */
+  const loadToken = useRef(0);
+  const loadedUser = useRef<string | null>(null);
+
+  const toast = useCallback((text: string, tone: Toast["tone"] = "ok") => {
+    const id = Date.now() + Math.random();
+    setToasts((v) => [...v, { id, text, tone }]);
+    setTimeout(() => setToasts((v) => v.filter((t) => t.id !== id)), 4000);
+  }, []);
+  const dismissToast = useCallback((id: number) => setToasts((v) => v.filter((t) => t.id !== id)), []);
+
+  const currentGroup = groups.find((g) => g.id === groupId) ?? null;
+
+  const mapSchedule = (r: any): Session => ({
+    id: r.id,
+    date: r.study_date,
+    memberId: r.member_id,
+    memberName: r.group_members?.name ?? r.student_name ?? "Thành viên",
+    time: String(r.start_time).slice(0, 5),
+    duration: r.duration,
+    done: r.done,
+  });
+
+  // ---- data loading -------------------------------------------------------
+  const loadGroups = useCallback(async () => {
+    if (!supabase) return;
+    setGroupsLoading(true);
+    // RLS decides which groups this account may see; no client-side owner filter.
+    const { data, error } = await supabase.from("groups").select("id,name,owner_id").order("created_at");
+    setGroupsLoading(false);
+    if (error) { setLoadError(error.message); return; }
+    setLoadError("");
+    const list = (data ?? []) as Group[];
+    setGroups(list);
+    setGroupId((prev) => (prev && list.some((g) => g.id === prev) ? prev : list[0]?.id ?? ""));
+    const counts = await supabase.from("group_members").select("group_id");
+    if (!counts.error) {
+      const tally: Record<string, number> = {};
+      for (const row of counts.data ?? []) tally[(row as { group_id: string }).group_id] = (tally[(row as { group_id: string }).group_id] ?? 0) + 1;
+      setMemberCounts(tally);
+    }
+  }, []);
+
+  const loadGroupData = useCallback(async (gid: string) => {
+    if (!supabase) return;
+    if (!gid) { setMembers([]); setSessions([]); return; }
+    const token = ++loadToken.current;
+    setDataLoading(true);
+    // Drop the previous group's rows before the request goes out, so no screen
+    // can show group A's members or statistics while group B is loading.
+    setMembers([]);
+    setSessions([]);
+    const [m, s] = await Promise.all([
+      supabase.from("group_members").select("id,group_id,name").eq("group_id", gid).order("created_at"),
+      supabase.from("schedules").select(SCHEDULE_COLS).eq("group_id", gid).order("study_date").order("start_time"),
+    ]);
+    if (token !== loadToken.current) return; // a newer group won the race
+    setDataLoading(false);
+    if (m.error || s.error) { setLoadError((m.error ?? s.error)!.message); return; }
+    setLoadError("");
+    setMembers((m.data ?? []) as Member[]);
+    setSessions((s.data ?? []).map(mapSchedule));
+  }, []);
+
+  useEffect(() => {
+    const on = () => setOnline(true), off = () => setOnline(false);
+    setOnline(navigator.onLine);
+    addEventListener("online", on);
+    addEventListener("offline", off);
+    return () => { removeEventListener("online", on); removeEventListener("offline", off); };
+  }, []);
+
+  useEffect(() => {
+    if (!supabase) { setAuthError("Thiếu cấu hình Supabase trong .env.local"); setAuthReady(true); setGroupsLoading(false); return; }
+    const apply = (session: any) => {
+      const u = session?.user ?? null;
+      setAuthReady(true);
+      setUserId(u?.id ?? "");
+      setUserEmail(u?.email ?? "");
+      // Supabase already carries the OAuth profile; no extra Google call, and
+      // the provider token is never read or stored.
+      const meta = (u?.user_metadata ?? {}) as Record<string, unknown>;
+      const pick = (...keys: string[]) => {
+        for (const k of keys) { const val = meta[k]; if (typeof val === "string" && val.trim()) return val; }
+        return "";
+      };
+      setUserName(pick("full_name", "name", "display_name"));
+      setUserAvatar(pick("avatar_url", "picture"));
+      const appMeta = (u?.app_metadata ?? {}) as { provider?: unknown; providers?: unknown };
+      const list = Array.isArray(appMeta.providers)
+        ? appMeta.providers.filter((x): x is string => typeof x === "string")
+        : typeof appMeta.provider === "string" ? [appMeta.provider] : [];
+      setUserProviders(list);
+      // Only refetch when the account actually changes; TOKEN_REFRESHED and
+      // USER_UPDATED fire with the same user and must not re-query.
+      if (loadedUser.current === (u?.id ?? null)) return;
+      loadedUser.current = u?.id ?? null;
+      if (u) { void loadGroups(); }
+      else { setGroups([]); setGroupId(""); setMembers([]); setSessions([]); setGroupsLoading(false); }
+    };
+    supabase.auth.getSession().then(({ data }) => apply(data.session));
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === "INITIAL_SESSION") return; // getSession() already handled it
+      apply(session);
+    });
+    return () => subscription.unsubscribe();
+  }, [loadGroups]);
+
+  useEffect(() => { if (userId) void loadGroupData(groupId); }, [groupId, userId, loadGroupData]);
+
+  // ---- auth ---------------------------------------------------------------
+  const submitAuth = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!supabase) return;
+    setAuthBusy(true); setAuthError("");
+    const creds = { email: email.trim(), password };
+    const { data, error } = authMode === "login"
+      ? await supabase.auth.signInWithPassword(creds)
+      : await supabase.auth.signUp(creds);
+    setAuthBusy(false);
+    if (error) { setAuthError(error.message); return; }
+    if (authMode === "signup" && !data.session) {
+      setAuthMode("login");
+      setAuthError("Đã gửi email xác nhận. Xác nhận xong hãy đăng nhập.");
+    }
+  };
+  const signInOAuth = async (provider: OAuthProvider) => {
+    if (!supabase) return;
+    setAuthError("");
+    setOauthBusy(provider);
+    // Only the provider name leaves the client; the app secret lives in
+    // Supabase and is never shipped to the browser.
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider,
+      options: { redirectTo: window.location.origin },
+    });
+    // On success the browser navigates away, so this only runs on failure.
+    if (error) {
+      const label = OAUTH.find((o) => o.id === provider)?.label ?? provider;
+      // Supabase answers "provider is not enabled" when the provider is off in
+      // the dashboard — a setup problem the user cannot fix from this screen.
+      setAuthError(
+        /not enabled|unsupported provider/i.test(error.message)
+          ? "Đăng nhập " + label + " chưa được bật cho ứng dụng này."
+          : error.message,
+      );
+      setOauthBusy(null);
+    }
+  };
+  const logout = async () => {
+    if (!supabase) return;
+    const { error } = await supabase.auth.signOut({ scope: "local" });
+    if (error) toast(error.message, "err");
+  };
+
+  // ---- groups -------------------------------------------------------------
+  const submitGroup = async () => {
+    if (!supabase || !groupForm) return;
+    const name = groupForm.name.trim();
+    if (!name) return;
+    setBusy(true);
+    if (groupForm.mode === "create") {
+      const { data, error } = await supabase.from("groups").insert({ name, owner_id: userId }).select("id,name,owner_id").single();
+      setBusy(false);
+      if (error) { toast(error.message, "err"); return; }
+      setGroups((v) => [...v, data as Group]);
+      setMemberCounts((c) => ({ ...c, [(data as Group).id]: 0 }));
+      setGroupId((data as Group).id);
+      setGroupForm(null);
+      toast(`Đã tạo nhóm "${name}"`);
+    } else {
+      const targetId = groupForm.id;
+      if (!targetId) { setBusy(false); return; }
+      const { error } = await supabase.from("groups").update({ name }).eq("id", targetId);
+      setBusy(false);
+      if (error) { toast(error.message, "err"); return; }
+      setGroups((v) => v.map((g) => (g.id === targetId ? { ...g, name } : g)));
+      setGroupForm(null);
+      toast("Đã đổi tên nhóm");
+    }
+  };
+
+  const askDeleteGroup = (target: Group) => {
+    setConfirm({
+      title: `Xóa nhóm "${target.name}"?`,
+      body: "Toàn bộ thành viên và lịch học của nhóm này sẽ bị xóa vĩnh viễn. Không thể hoàn tác.",
+      confirmLabel: "Xóa nhóm",
+      onConfirm: async () => {
+        if (!supabase) return;
+        setConfirmBusy(true);
+        // Children first: the FK may not cascade, and a failed group delete
+        // would otherwise leave the UI claiming success.
+        const schedulesDel = await supabase.from("schedules").delete().eq("group_id", target.id);
+        if (schedulesDel.error) { setConfirmBusy(false); setConfirm(null); toast(schedulesDel.error.message, "err"); return; }
+        const membersDel = await supabase.from("group_members").delete().eq("group_id", target.id);
+        if (membersDel.error) { setConfirmBusy(false); setConfirm(null); toast(membersDel.error.message, "err"); return; }
+        const { error } = await supabase.from("groups").delete().eq("id", target.id);
+        setConfirmBusy(false); setConfirm(null);
+        if (error) { toast(error.message, "err"); return; }
+        // Refetch rather than patching state: loadGroups already drops a
+        // groupId that no longer exists and falls back to the first group,
+        // so this cannot leave the app pointing at the deleted group.
+        setTab("home");
+        await loadGroups();
+        toast("Đã xóa nhóm");
+      },
+    });
+  };
+
+  // ---- members ------------------------------------------------------------
+  const submitMember = async () => {
+    if (!supabase || !memberForm || !groupId) return;
+    const name = memberForm.name.trim();
+    if (!name) return;
+    const editingId = memberForm.id;
+    setBusy(true);
+    if (editingId) {
+      const { error } = await supabase.from("group_members").update({ name }).eq("id", editingId);
+      setBusy(false);
+      if (error) { toast(error.message, "err"); return; }
+      setMembers((v) => v.map((m) => (m.id === editingId ? { ...m, name } : m)));
+      setSessions((v) => v.map((s) => (s.memberId === editingId ? { ...s, memberName: name } : s)));
+      toast("Đã đổi tên thành viên");
+    } else {
+      const { data, error } = await supabase.from("group_members").insert({ group_id: groupId, name }).select("id,group_id,name").single();
+      setBusy(false);
+      if (error) { toast(error.message, "err"); return; }
+      setMembers((v) => [...v, data as Member]);
+      setMemberCounts((c) => ({ ...c, [groupId]: (c[groupId] ?? 0) + 1 }));
+      toast(`Đã thêm ${name}`);
+    }
+    setMemberForm(null);
+  };
+
+  const askDeleteMember = (m: Member) => {
+    const count = sessions.filter((s) => s.memberId === m.id).length;
+    setConfirm({
+      title: `Xóa ${m.name}?`,
+      body: count > 0
+        ? `${count} buổi học của thành viên này cũng sẽ bị xóa. Không thể hoàn tác.`
+        : "Thành viên này sẽ bị xóa khỏi nhóm. Không thể hoàn tác.",
+      confirmLabel: "Xóa thành viên",
+      onConfirm: async () => {
+        if (!supabase) return;
+        setConfirmBusy(true);
+        const child = await supabase.from("schedules").delete().eq("member_id", m.id);
+        if (child.error) { setConfirmBusy(false); setConfirm(null); toast(child.error.message, "err"); return; }
+        const { error } = await supabase.from("group_members").delete().eq("id", m.id);
+        setConfirmBusy(false); setConfirm(null);
+        if (error) { toast(error.message, "err"); return; }
+        setMembers((v) => v.filter((x) => x.id !== m.id));
+        setMemberCounts((c) => ({ ...c, [m.group_id]: Math.max(0, (c[m.group_id] ?? 1) - 1) }));
+        setSessions((v) => v.filter((s) => s.memberId !== m.id));
+        toast("Đã xóa thành viên");
+      },
+    });
+  };
+
+  // ---- schedules ----------------------------------------------------------
+  const openSchedule = (s?: Session) =>
+    setScheduleForm(
+      s
+        ? { id: s.id, memberId: s.memberId ?? members[0]?.id ?? "", time: s.time, duration: s.duration }
+        : { id: null, memberId: members[0]?.id ?? "", time: DEFAULT_TIME, duration: 30 },
+    );
+
+  const submitSchedule = async () => {
+    if (!supabase || !scheduleForm || !groupId || !scheduleForm.memberId) return;
+    const f = scheduleForm;
+    const member = members.find((m) => m.id === f.memberId);
+    setBusy(true);
+    if (f.id === null) {
+      const { data, error } = await supabase.from("schedules").insert({
+        group_id: groupId,
+        member_id: f.memberId,
+        student_name: member?.name ?? "",
+        study_date: dateKey(selectedDate),
+        start_time: f.time,
+        duration: f.duration,
+        done: false,
+      }).select(SCHEDULE_COLS).single();
+      setBusy(false);
+      if (error) { toast(error.message, "err"); return; }
+      setSessions((v) => [...v, mapSchedule(data)]);
+      toast("Đã lưu lịch học");
+    } else {
+      const { data, error } = await supabase.from("schedules").update({
+        member_id: f.memberId,
+        student_name: member?.name ?? "",
+        start_time: f.time,
+        duration: f.duration,
+      }).eq("id", f.id).select(SCHEDULE_COLS).single();
+      setBusy(false);
+      if (error) { toast(error.message, "err"); return; }
+      setSessions((v) => v.map((s) => (s.id === f.id ? mapSchedule(data) : s)));
+      toast("Đã cập nhật lịch học");
+    }
+    setScheduleForm(null);
+  };
+
+  const toggleDone = async (x: Session) => {
+    if (!supabase) return;
+    const done = !x.done;
+    setSessions((v) => v.map((s) => (s.id === x.id ? { ...s, done } : s))); // optimistic
+    const { error } = await supabase.from("schedules").update({ done }).eq("id", x.id);
+    if (error) {
+      setSessions((v) => v.map((s) => (s.id === x.id ? { ...s, done: x.done } : s)));
+      toast(error.message, "err");
+    }
+  };
+
+  const askDeleteSchedule = (x: Session) =>
+    setConfirm({
+      title: "Xóa buổi học?",
+      body: `${x.memberName} · ${fmt12(x.time)} - ${fmt12(endOf(x.time, x.duration))}`,
+      confirmLabel: "Xóa buổi học",
+      onConfirm: async () => {
+        if (!supabase) return;
+        setConfirmBusy(true);
+        const { error } = await supabase.from("schedules").delete().eq("id", x.id);
+        setConfirmBusy(false); setConfirm(null);
+        if (error) { toast(error.message, "err"); return; }
+        setSessions((v) => v.filter((s) => s.id !== x.id));
+        toast("Đã xóa buổi học");
+      },
+    });
+
+  // ---- derived ------------------------------------------------------------
+  const week = useMemo(() => weekDays(selectedDate), [selectedDate]);
+  const monthRows = useMemo(() => monthWeeks(selectedDate), [selectedDate]);
+  /** dateKey -> how many sessions that day has, and how many are done. */
+  const byDate = useMemo(() => {
+    const map: Record<string, { total: number; done: number }> = {};
+    for (const s of sessions) {
+      const slot = (map[s.date] ??= { total: 0, done: 0 });
+      slot.total += 1;
+      if (s.done) slot.done += 1;
+    }
+    return map;
+  }, [sessions]);
+  const daily = useMemo(
+    () => sessions.filter((s) => s.date === dateKey(selectedDate)).sort((a, b) => minutesOf(a.time) - minutesOf(b.time)),
+    [sessions, selectedDate],
+  );
+  const doneCount = sessions.filter((s) => s.done).length;
+  const moveDay = (n: number) => { const d = new Date(selectedDate); d.setDate(d.getDate() + n); setSelectedDate(d); };
+
+  // ---- gates --------------------------------------------------------------
+  if (!authReady) {
+    return (
+      <div className="grid min-h-screen place-items-center bg-slate-100 p-6 text-center font-semibold text-slate-500">
+        Đang kết nối Supabase...
+      </div>
+    );
+  }
+
+  if (!userId) {
+    return (
+      <div className="grid min-h-screen place-items-center bg-gradient-to-br from-slate-100 via-slate-50 to-indigo-50 p-5">
+        <div className="w-full max-w-sm rounded-[28px] bg-white p-6 shadow-xl sm:p-8">
+          <p className="text-xs font-bold uppercase tracking-[.2em] text-indigo-500">VioEdu</p>
+          <h1 className="mt-2 text-2xl font-extrabold">{authMode === "login" ? "Đăng nhập" : "Đăng ký"}</h1>
+          <p className="mt-1 text-sm text-slate-500">
+            {authMode === "login" ? "Đăng nhập để xem lịch học của nhóm." : "Tạo tài khoản mới bằng email và mật khẩu."}
+          </p>
+          <form onSubmit={submitAuth} className="mt-6 space-y-3">
+            <label className="block">
+              <span className="text-sm font-bold">Email</span>
+              <input type="email" required autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} className={`mt-1 ${field}`} placeholder="email@example.com" />
+            </label>
+            <label className="block">
+              <span className="text-sm font-bold">Mật khẩu</span>
+              <input type="password" required minLength={6} autoComplete={authMode === "login" ? "current-password" : "new-password"} value={password} onChange={(e) => setPassword(e.target.value)} className={`mt-1 ${field}`} placeholder="Tối thiểu 6 ký tự" />
+            </label>
+            {authError && <p className="rounded-2xl bg-red-50 p-3 text-sm text-red-700" role="alert">{authError}</p>}
+            <button disabled={authBusy} className={primaryBtn}>
+              {authBusy ? "Đang xử lý..." : authMode === "login" ? "Đăng nhập" : "Đăng ký"}
+            </button>
+          </form>
+          <div className="my-5 flex items-center gap-3 text-xs text-slate-400">
+            <span className="h-px flex-1 bg-slate-200" />hoặc<span className="h-px flex-1 bg-slate-200" />
+          </div>
+          <div className="space-y-2">
+            {OAUTH.map(({ id, label }) => (
+              <button key={id} type="button" onClick={() => signInOAuth(id)} disabled={oauthBusy !== null}
+                className="min-h-[48px] w-full rounded-2xl border border-slate-200 px-4 font-bold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60">
+                {oauthBusy === id ? "Đang chuyển hướng..." : `Tiếp tục với ${label}`}
+              </button>
+            ))}
+          </div>
+          <p className="mt-5 text-center text-sm text-slate-500">
+            {authMode === "login" ? "Chưa có tài khoản? " : "Đã có tài khoản? "}
+            <button type="button" onClick={() => { setAuthMode(authMode === "login" ? "signup" : "login"); setAuthError(""); }} className="font-bold text-indigo-600">
+              {authMode === "login" ? "Đăng ký" : "Đăng nhập"}
+            </button>
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const showDateStrip = tab === "home" && groups.length > 0;
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-100 via-slate-50 to-indigo-50">
+      <div className="relative mx-auto flex min-h-screen w-full max-w-md flex-col bg-white shadow-xl sm:my-6 sm:min-h-[calc(100vh-3rem)] sm:rounded-[34px]">
+        {!online && (
+          <div className="flex items-center justify-center gap-2 bg-amber-400 p-2 text-xs font-bold text-amber-950 sm:rounded-t-[34px]">
+            <WifiOff size={14} />Đang ngoại tuyến
+          </div>
+        )}
+
+        <header className={`bg-gradient-to-br from-indigo-600 to-purple-600 px-5 text-white ${showDateStrip ? "pb-7 pt-6" : "pb-6 pt-5"} ${online ? "sm:rounded-t-[34px]" : ""}`}>
+          <div className="flex items-start justify-between gap-3">
+            {/* flex-1 so the title claims the row's free space; without it the
+                wrapper shrinks to its own content and `truncate` clips a name
+                that would have fitted. */}
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] font-bold uppercase tracking-[.2em] text-indigo-200">VioEdu</p>
+              {tab === "home" && groups.length > 0 ? (
+                <button
+                  onClick={() => setShowGroupPicker(true)}
+                  aria-haspopup="dialog"
+                  className="-ml-2 mt-1 flex min-h-[44px] w-full items-center gap-1.5 rounded-2xl px-2 text-left transition hover:bg-white/10"
+                >
+                  <span className="min-w-0 truncate text-2xl font-extrabold">{currentGroup?.name ?? "Chọn nhóm"}</span>
+                  <ChevronDown size={20} className="shrink-0 text-indigo-200" />
+                </button>
+              ) : (
+                <h1 className="mt-1 truncate text-2xl font-extrabold">{TAB_TITLE[tab]}</h1>
+              )}
+            </div>
+            {tab === "home" && (
+              <a href="https://vio.edu.vn/" target="_blank" rel="noopener noreferrer" aria-label="Mở VioEdu"
+                 className="flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-2xl bg-white/15 px-3 transition hover:bg-white/25">
+                <span className="hidden text-sm font-bold sm:inline">VioEdu</span>
+                <ExternalLink size={20} />
+              </a>
+            )}
+          </div>
+
+          {showDateStrip && (
+            <div className="mt-5 flex items-center justify-between rounded-2xl bg-white/10 p-1.5">
+              <button onClick={() => moveDay(-1)} aria-label="Ngày trước" className="grid h-11 w-11 place-items-center rounded-xl transition hover:bg-white/15">
+                <ChevronLeft />
+              </button>
+              <div className="text-center">
+                <p className="text-[11px] text-indigo-200">Ngày đang xem</p>
+                <b>{dateLabel(selectedDate)}</b>
+              </div>
+              <button onClick={() => moveDay(1)} aria-label="Ngày sau" className="grid h-11 w-11 place-items-center rounded-xl transition hover:bg-white/15">
+                <ChevronRight />
+              </button>
+            </div>
+          )}
+        </header>
+
+        <main className="-mt-3 flex-1 rounded-t-[28px] bg-slate-50 px-4 pt-5" style={{ paddingBottom: "calc(7rem + env(safe-area-inset-bottom, 0px))" }}>
+          {loadError && (
+            <div className="mb-4 flex items-center justify-between gap-3 rounded-2xl bg-red-50 p-3 text-sm text-red-700" role="alert">
+              <span className="min-w-0">{loadError}</span>
+              <button onClick={() => { setLoadError(""); void loadGroups(); void loadGroupData(groupId); }} className="shrink-0 font-bold underline">Thử lại</button>
+            </div>
+          )}
+
+          {groupsLoading ? (
+            <div className="space-y-3"><Skeleton className="h-12" /><Skeleton className="h-24" /><Skeleton className="h-24" /></div>
+          ) : groups.length === 0 ? (
+            <EmptyState
+              icon={<UsersRound size={22} />}
+              title="Chưa có nhóm nào"
+              hint="Tạo nhóm đầu tiên để bắt đầu thêm thành viên và lịch học."
+              action={
+                <button onClick={() => setGroupForm({ mode: "create", name: "" })} className={primaryBtn}>
+                  <Plus size={18} className="mr-1 inline" />Tạo nhóm mới
+                </button>
+              }
+            />
+          ) : (
+            <>
+              {tab === "home" && (
+                <>
+                  <div className="mb-4 rounded-3xl bg-white p-3 shadow-sm">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <button
+                        onClick={() => setSelectedDate((d) => (calView === "week" ? addDays(d, -7) : addMonths(d, -1)))}
+                        aria-label={calView === "week" ? "Tuần trước" : "Tháng trước"}
+                        className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-slate-500 transition hover:bg-slate-100">
+                        <ChevronLeft size={18} />
+                      </button>
+                      <b className="min-w-0 truncate text-sm">{calView === "week" ? weekLabel(selectedDate) : monthLabel(selectedDate)}</b>
+                      <button
+                        onClick={() => setSelectedDate((d) => (calView === "week" ? addDays(d, 7) : addMonths(d, 1)))}
+                        aria-label={calView === "week" ? "Tuần sau" : "Tháng sau"}
+                        className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-slate-500 transition hover:bg-slate-100">
+                        <ChevronRight size={18} />
+                      </button>
+                    </div>
+
+                    <div className="mb-2 flex gap-1 rounded-2xl bg-slate-100 p-1">
+                      {(["week", "month"] as const).map((v) => (
+                        <button key={v} onClick={() => setCalView(v)} aria-pressed={calView === v}
+                          className={`min-h-[36px] flex-1 rounded-xl text-xs font-bold transition ${calView === v ? "bg-white text-indigo-700 shadow-sm" : "text-slate-600 hover:text-slate-900"}`}>
+                          {v === "week" ? "Tuần" : "Tháng"}
+                        </button>
+                      ))}
+                      {dateKey(selectedDate) !== dateKey(today) && (
+                        <button onClick={() => setSelectedDate(today)}
+                          className="min-h-[36px] rounded-xl px-3 text-xs font-bold text-indigo-600 transition hover:bg-white">
+                          Hôm nay
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="grid grid-cols-7 gap-1 text-center text-[10px] font-bold text-slate-400">
+                      {WEEKDAYS.map((w) => <div key={w}>{w}</div>)}
+                    </div>
+
+                    {(calView === "week" ? [week] : monthRows).map((row, ri) => (
+                      <div key={ri} className="mt-1 grid grid-cols-7 gap-1">
+                        {row.map((d) => {
+                          const key = dateKey(d);
+                          const active = key === dateKey(selectedDate);
+                          const isToday = key === dateKey(today);
+                          const outside = calView === "month" && d.getMonth() !== selectedDate.getMonth();
+                          const tally = byDate[key];
+                          return (
+                            <button key={key} onClick={() => setSelectedDate(d)} aria-current={active ? "date" : undefined}
+                              aria-label={`${dateLabel(d)}${tally ? ` — ${tally.total} buổi` : ""}`}
+                              className={`flex min-h-[44px] flex-col items-center justify-center gap-0.5 rounded-xl transition ${
+                                active ? "bg-indigo-600 text-white shadow-sm"
+                                : outside ? "text-slate-300 hover:bg-slate-50"
+                                : "text-slate-700 hover:bg-slate-100"}`}>
+                              <b className={`text-sm ${!active && isToday ? "text-indigo-600" : ""}`}>{d.getDate()}</b>
+                              {/* Dot marks a day with sessions; filled once they are all done. */}
+                              <span className={`h-1.5 w-1.5 rounded-full ${
+                                !tally ? "bg-transparent"
+                                : active ? "bg-white"
+                                : tally.done === tally.total ? "bg-emerald-500"
+                                : "bg-indigo-500"}`} />
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="mb-3 flex items-end justify-between gap-3">
+                    <div>
+                      <h2 className="font-extrabold">Lịch học</h2>
+                      <p className="text-xs text-slate-500">{daily.length} buổi đã lên lịch</p>
+                    </div>
+                    {/* Hidden while the empty state is showing: its own CTA is
+                        the single call to action for that screen. */}
+                    {daily.length > 0 && members.length > 0 && (
+                      <button onClick={() => openSchedule()}
+                        className="flex min-h-[44px] items-center gap-1 rounded-2xl bg-indigo-50 px-3 font-bold text-indigo-700 transition hover:bg-indigo-100">
+                        <Plus size={17} />Thêm
+                      </button>
+                    )}
+                  </div>
+
+                  {dataLoading ? (
+                    <div className="space-y-3"><Skeleton className="h-32" /><Skeleton className="h-32" /></div>
+                  ) : members.length === 0 ? (
+                    <EmptyState icon={<UsersRound size={22} />} title="Nhóm chưa có thành viên"
+                      hint="Thêm thành viên trước khi lên lịch học."
+                      action={<button onClick={() => { setTab("people"); setMemberForm({ id: null, name: "" }); }} className={primaryBtn}>Thêm thành viên</button>} />
+                  ) : daily.length === 0 ? (
+                    <EmptyState icon={<CalendarDays size={22} />}
+                      title={dateKey(selectedDate) === dateKey(today) ? "Không có lịch học hôm nay" : "Không có lịch học ngày này"}
+                      action={<button onClick={() => openSchedule()} className={primaryBtn}><Plus size={18} className="mr-1 inline" />Thêm lịch học</button>} />
+                  ) : (
+                    <div className="space-y-3">
+                      {daily.map((x) => (
+                        <motion.article layout key={x.id} className={`rounded-3xl bg-white p-4 shadow-sm ${x.done ? "opacity-75" : ""}`}>
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex min-w-0 flex-1 gap-3">
+                              <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-indigo-50 text-base font-extrabold text-indigo-700">
+                                {x.memberName.trim().charAt(0).toUpperCase() || "?"}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <b className={`block truncate leading-tight ${x.done ? "text-slate-500 line-through" : ""}`}>{x.memberName}</b>
+                                {/* Time and duration on one line: two stacked lines
+                                    pushed the card past a comfortable phone height. */}
+                                <p className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-sm text-slate-600">
+                                  <Clock3 size={14} className="shrink-0" />
+                                  <span>{fmt12(x.time)} - {fmt12(endOf(x.time, x.duration))}</span>
+                                  <span className="text-slate-400">·</span>
+                                  <span className="text-slate-500">{x.duration} phút</span>
+                                </p>
+                              </div>
+                            </div>
+                            <RowMenu
+                              label={`Tùy chọn cho buổi học của ${x.memberName}`}
+                              items={[
+                                { label: "Sửa buổi học", icon: <Pencil size={15} />, onSelect: () => openSchedule(x) },
+                                { label: "Xóa buổi học", icon: <Trash2 size={15} />, danger: true, onSelect: () => askDeleteSchedule(x) },
+                              ]}
+                            />
+                          </div>
+                          <div className="mt-3 flex gap-2">
+                            <button onClick={() => toggleDone(x)}
+                              className={`flex min-h-[44px] flex-1 items-center justify-center gap-1 rounded-2xl text-xs font-bold transition ${x.done ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}>
+                              <Check size={15} />{x.done ? "Đã học" : "Hoàn thành"}
+                            </button>
+                            <a href="https://vio.edu.vn/" target="_blank" rel="noopener noreferrer"
+                              className="grid min-h-[44px] place-items-center rounded-2xl bg-indigo-600 px-4 text-sm font-bold text-white transition hover:bg-indigo-700">
+                              Học ngay
+                            </a>
+                          </div>
+                        </motion.article>
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+
+              {tab === "people" && (
+                <>
+                  <div className="mb-4 flex items-center justify-between gap-3">
+                    {/* Same sheet as the Lịch header, so switching groups behaves
+                        identically wherever it is offered. */}
+                    <button onClick={() => setShowGroupPicker(true)} aria-haspopup="dialog"
+                      className="-ml-2 flex min-h-[44px] min-w-0 items-center gap-1 rounded-2xl px-2 font-bold text-slate-800 transition hover:bg-slate-200/60">
+                      <span className="truncate">{currentGroup?.name ?? "Chọn nhóm"}</span>
+                      <ChevronDown size={18} className="shrink-0 text-slate-500" />
+                    </button>
+                    {members.length > 0 && (
+                      <button onClick={() => setMemberForm({ id: null, name: "" })} aria-label="Thêm thành viên"
+                        className="flex min-h-[44px] shrink-0 items-center gap-1 rounded-2xl bg-indigo-50 px-3 font-bold text-indigo-700 transition hover:bg-indigo-100">
+                        <Plus size={17} />Thêm
+                      </button>
+                    )}
+                  </div>
+                  {dataLoading ? (
+                    <div className="space-y-2"><Skeleton className="h-20" /><Skeleton className="h-20" /></div>
+                  ) : members.length === 0 ? (
+                    <EmptyState icon={<UsersRound size={22} />} title="Chưa có thành viên"
+                      hint="Thêm thành viên để bắt đầu lên lịch."
+                      action={
+                        <button onClick={() => setMemberForm({ id: null, name: "" })} className={primaryBtn}>
+                          <Plus size={18} className="mr-1 inline" />Thêm thành viên
+                        </button>
+                      } />
+                  ) : (
+                    <div className="space-y-2">
+                      {members.map((m) => {
+                        const total = sessions.filter((s) => s.memberId === m.id).length;
+                        const done = sessions.filter((s) => s.memberId === m.id && s.done).length;
+                        return (
+                          <div key={m.id} className="flex items-center gap-3 rounded-3xl bg-white p-4 shadow-sm">
+                            <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-indigo-50 text-base font-extrabold text-indigo-700">
+                              {m.name.trim().charAt(0).toUpperCase() || "?"}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <b className="block truncate leading-tight">{m.name}</b>
+                              <p className="mt-0.5 text-xs text-slate-500">{done}/{total} buổi hoàn thành</p>
+                            </div>
+                            <RowMenu
+                              label={`Tùy chọn cho ${m.name}`}
+                              items={[
+                                { label: "Đổi tên", icon: <Pencil size={15} />, onSelect: () => setMemberForm({ id: m.id, name: m.name }) },
+                                { label: "Xóa thành viên", icon: <Trash2 size={15} />, danger: true, onSelect: () => askDeleteMember(m) },
+                              ]}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </>
+              )}
+
+              {tab === "stats" && (
+                <>
+                  <div className="mb-4 flex items-center justify-between gap-3">
+                    <button onClick={() => setShowGroupPicker(true)} aria-haspopup="dialog"
+                      className="-ml-2 flex min-h-[44px] min-w-0 items-center gap-1 rounded-2xl px-2 font-bold text-slate-800 transition hover:bg-slate-200/60">
+                      <span className="truncate">{currentGroup?.name ?? "Chọn nhóm"}</span>
+                      <ChevronDown size={18} className="shrink-0 text-slate-500" />
+                    </button>
+                  </div>
+
+                  {dataLoading ? (
+                    <div className="space-y-3"><Skeleton className="h-28" /><Skeleton className="h-20" /><Skeleton className="h-20" /></div>
+                  ) : members.length === 0 ? (
+                    <EmptyState icon={<UsersRound size={22} />} title="Nhóm chưa có thành viên"
+                      hint="Thêm thành viên rồi lên lịch học để theo dõi tiến độ tại đây."
+                      action={
+                        <button onClick={() => { setTab("people"); setMemberForm({ id: null, name: "" }); }} className={primaryBtn}>
+                          <Plus size={18} className="mr-1 inline" />Thêm thành viên
+                        </button>
+                      } />
+                  ) : sessions.length === 0 ? (
+                    // 0/0 is arithmetically fine but tells the user nothing, so the
+                    // totals card and every member row stay hidden until real data exists.
+                    <EmptyState icon={<CalendarDays size={22} />} title="Chưa có dữ liệu tiến độ"
+                      hint="Tạo lịch học và đánh dấu hoàn thành để theo dõi tiến độ tại đây."
+                      action={
+                        <button onClick={() => { setTab("home"); openSchedule(); }} className={primaryBtn}>
+                          <Plus size={18} className="mr-1 inline" />Tạo lịch học
+                        </button>
+                      } />
+                  ) : (
+                    <>
+                      <div className="rounded-3xl bg-white p-5 shadow-sm">
+                        <p className="text-sm text-slate-500">Tổng số buổi hoàn thành</p>
+                        <div className="text-4xl font-black text-indigo-600">
+                          {doneCount}<span className="text-lg text-slate-400"> / {sessions.length}</span>
+                        </div>
+                        <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100">
+                          <div className="h-full rounded-full bg-indigo-600 transition-all"
+                            style={{ width: `${(doneCount / sessions.length) * 100}%` }} />
+                        </div>
+                        <p className="mt-2 text-xs text-slate-500">
+                          {Math.round((doneCount / sessions.length) * 100)}% tổng số buổi của nhóm
+                        </p>
+                      </div>
+                      <div className="mt-3 space-y-2">
+                        {members.map((m) => {
+                          const total = sessions.filter((s) => s.memberId === m.id).length;
+                          const done = sessions.filter((s) => s.memberId === m.id && s.done).length;
+                          return (
+                            <div key={m.id} className="rounded-3xl bg-white p-4 shadow-sm">
+                              <div className="flex items-baseline justify-between gap-3">
+                                <b className="truncate">{m.name}</b>
+                                <span className="shrink-0 text-sm text-slate-500">
+                                  {total === 0 ? "Chưa có lịch" : `${done}/${total} buổi`}
+                                </span>
+                              </div>
+                              {total > 0 && (
+                                <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-100">
+                                  <div className="h-full rounded-full bg-indigo-500 transition-all" style={{ width: `${(done / total) * 100}%` }} />
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
+                </>
+              )}
+
+              {tab === "settings" && (
+                <div className="space-y-5">
+                  <section>
+                    <h2 className="mb-2 px-1 text-xs font-bold uppercase tracking-wider text-slate-400">Tài khoản</h2>
+                    <div className="flex items-center gap-3 rounded-3xl bg-white p-4 shadow-sm">
+                      {userAvatar ? (
+                        // eslint-disable-next-line @next/next/no-img-element -- avatar is an arbitrary provider URL, not a known next/image domain
+                        <img src={userAvatar} alt="" referrerPolicy="no-referrer"
+                          className="h-12 w-12 shrink-0 rounded-full object-cover"
+                          onError={() => setUserAvatar("")} />
+                      ) : (
+                        <div className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-indigo-50 text-lg font-extrabold uppercase text-indigo-700">
+                          {(userName || userEmail).trim().charAt(0) || "?"}
+                        </div>
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <b className="block truncate">{userName || userEmail || "Tài khoản"}</b>
+                        {userName && userEmail && <p className="truncate text-sm text-slate-500">{userEmail}</p>}
+                        {/* One badge per linked identity: an account can sign in
+                            with a password and still have Google or Facebook linked. */}
+                        {userProviders.filter((x) => x !== "email").length > 0 && (
+                          <span className="mt-1.5 flex flex-wrap gap-1">
+                            {userProviders.filter((x) => x !== "email").map((x) => (
+                              <span key={x} className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold capitalize text-slate-600">{x}</span>
+                            ))}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </section>
+
+                  <section>
+                    <h2 className="mb-2 px-1 text-xs font-bold uppercase tracking-wider text-slate-400">Nhóm của tôi</h2>
+                    <div className="space-y-2">
+                      {groups.map((g) => {
+                        const active = g.id === groupId;
+                        const owned = g.owner_id === userId;
+                        return (
+                          <div key={g.id}
+                            className={`flex items-center gap-2 rounded-3xl p-4 shadow-sm transition ${active ? "bg-indigo-50 ring-1 ring-indigo-200" : "bg-white"}`}>
+                            <button onClick={() => setGroupId(g.id)} aria-current={active ? "true" : undefined}
+                              className="flex min-w-0 flex-1 items-center gap-3 text-left">
+                              <Check size={18} className={`shrink-0 ${active ? "text-indigo-600" : "invisible"}`} />
+                              <span className="min-w-0">
+                                <span className={`block truncate font-bold ${active ? "text-indigo-800" : ""}`}>{g.name}</span>
+                                <span className={`block text-xs ${active ? "text-indigo-500" : "text-slate-500"}`}>
+                                  {memberCounts[g.id] ?? 0} thành viên
+                                </span>
+                              </span>
+                            </button>
+                            {owned ? (
+                              <RowMenu
+                                label={`Tùy chọn cho nhóm ${g.name}`}
+                                items={[
+                                  { label: "Đổi tên nhóm", icon: <Pencil size={15} />, onSelect: () => setGroupForm({ mode: "rename", id: g.id, name: g.name }) },
+                                  { label: "Xóa nhóm", icon: <Trash2 size={15} />, danger: true, onSelect: () => askDeleteGroup(g) },
+                                ]}
+                              />
+                            ) : (
+                              // Not the owner: RLS would reject the write anyway, so the
+                              // menu is omitted rather than offered and then failing.
+                              <span className="px-2 text-[11px] font-semibold text-slate-400">Khách</span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <button onClick={() => setGroupForm({ mode: "create", name: "" })}
+                      className="mt-3 flex min-h-[52px] w-full items-center justify-center gap-2 rounded-2xl border border-dashed border-slate-300 font-bold text-indigo-600 transition hover:bg-indigo-50">
+                      <Plus size={18} />Tạo nhóm mới
+                    </button>
+                  </section>
+
+                  <button onClick={logout} className="flex min-h-[48px] w-full items-center justify-center gap-2 rounded-2xl bg-red-50 font-bold text-red-600 transition hover:bg-red-100">
+                    <LogOut size={17} />Đăng xuất thiết bị này
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+        </main>
+
+        {groups.length > 0 && (
+          <nav className="sticky bottom-0 z-30 flex w-full justify-around border-t border-slate-200 bg-white/95 backdrop-blur sm:rounded-b-[34px]"
+            style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
+            {TABS.map(({ id, icon: Icon, label }) => (
+              <button key={id} onClick={() => setTab(id)} aria-current={tab === id ? "page" : undefined}
+                className={`flex min-h-[56px] flex-1 flex-col items-center justify-center gap-0.5 px-1 py-2 text-[11px] font-bold transition ${tab === id ? "text-indigo-600" : "text-slate-600 hover:text-slate-900"}`}>
+                <Icon size={20} />{label}
+              </button>
+            ))}
+          </nav>
+        )}
+      </div>
+
+      {/* --- sheets ---------------------------------------------------- */}
+      <Sheet open={showGroupPicker} title="Chọn nhóm" onClose={() => setShowGroupPicker(false)}>
+        <div className="space-y-1">
+          {groups.map((g) => (
+            <button key={g.id} onClick={() => { setGroupId(g.id); setShowGroupPicker(false); }}
+              className={`flex min-h-[56px] w-full items-center gap-3 rounded-2xl px-3 py-2 text-left transition ${g.id === groupId ? "bg-indigo-50 text-indigo-700" : "hover:bg-slate-100"}`}>
+              <Check size={18} className={`shrink-0 ${g.id === groupId ? "" : "invisible"}`} />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-bold">{g.name}</span>
+                <span className={`block text-xs ${g.id === groupId ? "text-indigo-500" : "text-slate-500"}`}>
+                  {memberCounts[g.id] ?? 0} thành viên
+                </span>
+              </span>
+            </button>
+          ))}
+        </div>
+        <div className="my-3 h-px bg-slate-200" />
+        <button onClick={() => { setShowGroupPicker(false); setGroupForm({ mode: "create", name: "" }); }}
+          className="flex min-h-[52px] w-full items-center gap-3 rounded-2xl border border-dashed border-slate-300 px-3 font-bold text-indigo-600 transition hover:bg-indigo-50">
+          <Plus size={18} />Tạo nhóm mới
+        </button>
+      </Sheet>
+
+      <Sheet open={!!groupForm} title={groupForm?.mode === "rename" ? "Đổi tên nhóm" : "Tạo nhóm mới"} onClose={() => setGroupForm(null)}>
+        <label className="block">
+          <span className="text-sm font-bold">Tên nhóm</span>
+          <input autoFocus value={groupForm?.name ?? ""} onChange={(e) => setGroupForm((f) => (f ? { ...f, name: e.target.value } : f))}
+            onKeyDown={(e) => { if (e.key === "Enter") void submitGroup(); }} className={`mt-1 ${field}`} placeholder="Ví dụ: Nhóm 1" />
+        </label>
+        <button disabled={busy || !groupForm?.name.trim()} onClick={submitGroup} className={`mt-5 ${primaryBtn}`}>
+          {busy ? "Đang lưu..." : groupForm?.mode === "rename" ? "Lưu tên nhóm" : "Tạo nhóm"}
+        </button>
+      </Sheet>
+
+      <Sheet open={!!memberForm} title={memberForm?.id ? "Đổi tên thành viên" : "Thêm thành viên"} onClose={() => setMemberForm(null)}>
+        <label className="block">
+          <span className="text-sm font-bold">Tên thành viên</span>
+          <input autoFocus value={memberForm?.name ?? ""} onChange={(e) => setMemberForm((f) => (f ? { ...f, name: e.target.value } : f))}
+            onKeyDown={(e) => { if (e.key === "Enter") void submitMember(); }} className={`mt-1 ${field}`} placeholder="Nhập tên" />
+        </label>
+        <button disabled={busy || !memberForm?.name.trim()} onClick={submitMember} className={`mt-5 ${primaryBtn}`}>
+          {busy ? "Đang lưu..." : memberForm?.id ? "Lưu tên" : "Thêm thành viên"}
+        </button>
+      </Sheet>
+
+      <Sheet open={!!scheduleForm} title={scheduleForm?.id ? "Sửa lịch học" : "Thêm lịch học"} onClose={() => setScheduleForm(null)}>
+        <div className="space-y-4">
+          <label className="block">
+            <span className="text-sm font-bold">Thành viên</span>
+            <select value={scheduleForm?.memberId ?? ""} onChange={(e) => setScheduleForm((f) => (f ? { ...f, memberId: e.target.value } : f))} className={`mt-1 ${field}`}>
+              {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+            </select>
+          </label>
+          <div>
+            <span className="text-sm font-bold">Giờ bắt đầu</span>
+            <div className="mt-1">
+              <TimePicker value={scheduleForm?.time ?? DEFAULT_TIME} onChange={(t) => setScheduleForm((f) => (f ? { ...f, time: t } : f))} />
+            </div>
+          </div>
+          <label className="block">
+            <span className="text-sm font-bold">Thời lượng</span>
+            <select value={scheduleForm?.duration ?? 30} onChange={(e) => setScheduleForm((f) => (f ? { ...f, duration: +e.target.value } : f))} className={`mt-1 ${field}`}>
+              {DURATIONS.map((d) => <option key={d} value={d}>{d} phút</option>)}
+            </select>
+          </label>
+          {scheduleForm && (
+            <p className="rounded-2xl bg-slate-100 p-3 text-sm text-slate-600">
+              {fmt12(scheduleForm.time)} - {fmt12(endOf(scheduleForm.time, scheduleForm.duration))}
+              {!scheduleForm.id && <> · {dateLabel(selectedDate)}</>}
+            </p>
+          )}
+        </div>
+        <button disabled={busy || !scheduleForm?.memberId} onClick={submitSchedule} className={`mt-5 ${primaryBtn}`}>
+          {busy ? "Đang lưu..." : "Lưu lịch học"}
+        </button>
+        {members.length === 0 && <p className="mt-2 text-center text-xs text-slate-500">Nhóm chưa có thành viên nào.</p>}
+      </Sheet>
+
+      <ConfirmDialog state={confirm} busy={confirmBusy} onClose={() => { if (!confirmBusy) setConfirm(null); }} />
+      <ToastStack toasts={toasts} onDismiss={dismissToast} />
+    </div>
+  );
+}
