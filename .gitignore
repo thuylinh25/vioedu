@@ -7,3 +7,6 @@ node_modules
 # typescript / next build artifacts
 *.tsbuildinfo
 next-env.d.ts
+
+.vercel
+.env*
