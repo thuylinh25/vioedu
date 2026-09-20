@@ -2,7 +2,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, Clock3, ExternalLink,
-  Home, LogOut, Pencil, Plus, Settings, Trash2, UsersRound, WifiOff,
+  Eye, EyeOff, Home, LogOut, Pencil, Plus, Settings, Trash2, UsersRound, WifiOff,
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { supabase } from "../lib-supabase-client";
@@ -11,6 +11,7 @@ import {
   monthLabel, monthWeeks, pad, to12, to24, weekDays, weekLabel,
 } from "./lib-time";
 import { ConfirmDialog, ConfirmState, EmptyState, RowMenu, Sheet, Skeleton, Toast, ToastStack } from "./ui";
+import { FacebookIcon, GoogleIcon } from "./BrandIcons";
 
 type Group = { id: string; name: string; owner_id: string };
 type Member = { id: string; group_id: string; name: string };
@@ -21,10 +22,25 @@ type Session = {
 type Tab = "home" | "people" | "stats" | "settings";
 type OAuthProvider = "google" | "facebook";
 
-const OAUTH: { id: OAuthProvider; label: string }[] = [
-  { id: "google", label: "Google" },
-  { id: "facebook", label: "Facebook" },
+const OAUTH: { id: OAuthProvider; label: string; Icon: React.ComponentType<{ size?: number }> }[] = [
+  { id: "google", label: "Google", Icon: GoogleIcon },
+  { id: "facebook", label: "Facebook", Icon: FacebookIcon },
 ];
+
+const MIN_PASSWORD = 6;
+
+/** Supabase returns operator-facing strings; show people something they can act on. */
+function friendlyAuthError(raw: string): string {
+  const m = raw.toLowerCase();
+  if (m.includes("invalid login credentials")) return "Email hoặc mật khẩu không đúng. Vui lòng kiểm tra lại.";
+  if (m.includes("email not confirmed")) return "Email chưa được xác nhận. Hãy kiểm tra hộp thư và xác nhận trước khi đăng nhập.";
+  if (m.includes("user already registered") || m.includes("already been registered")) return "Email này đã có tài khoản. Hãy đăng nhập thay vì đăng ký.";
+  if (m.includes("password should be at least") || m.includes("password is too short")) return "Mật khẩu phải có ít nhất " + MIN_PASSWORD + " ký tự.";
+  if (m.includes("unable to validate email") || m.includes("invalid email")) return "Địa chỉ email không hợp lệ.";
+  if (m.includes("rate limit") || m.includes("too many requests")) return "Bạn đã thử quá nhiều lần. Vui lòng đợi một lát rồi thử lại.";
+  if (m.includes("failed to fetch") || m.includes("network")) return "Không kết nối được máy chủ. Kiểm tra kết nối mạng rồi thử lại.";
+  return "Không thể xử lý yêu cầu lúc này. Vui lòng thử lại.";
+}
 
 const TABS: { id: Tab; icon: typeof Home; label: string }[] = [
   { id: "home", icon: Home, label: "Lịch" },
@@ -81,6 +97,9 @@ export default function VioEduApp() {
   const [authError, setAuthError] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const [oauthBusy, setOauthBusy] = useState<OAuthProvider | null>(null);
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
 
   const [groups, setGroups] = useState<Group[]>([]);
   const [groupId, setGroupId] = useState("");
@@ -215,13 +234,24 @@ export default function VioEduApp() {
   const submitAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!supabase) return;
+    // Validate locally first: a mismatched confirmation must never reach Supabase.
+    if (authMode === "signup") {
+      if (password.length < MIN_PASSWORD) {
+        setAuthError("Mật khẩu phải có ít nhất " + MIN_PASSWORD + " ký tự.");
+        return;
+      }
+      if (password !== confirmPassword) {
+        setAuthError("Mật khẩu xác nhận không khớp.");
+        return;
+      }
+    }
     setAuthBusy(true); setAuthError("");
     const creds = { email: email.trim(), password };
     const { data, error } = authMode === "login"
       ? await supabase.auth.signInWithPassword(creds)
       : await supabase.auth.signUp(creds);
     setAuthBusy(false);
-    if (error) { setAuthError(error.message); return; }
+    if (error) { setAuthError(friendlyAuthError(error.message)); return; }
     if (authMode === "signup" && !data.session) {
       setAuthMode("login");
       setAuthError("Đã gửi email xác nhận. Xác nhận xong hãy đăng nhập.");
@@ -464,17 +494,69 @@ export default function VioEduApp() {
           <p className="text-xs font-bold uppercase tracking-[.2em] text-indigo-500">VioEdu</p>
           <h1 className="mt-2 text-2xl font-extrabold">{authMode === "login" ? "Đăng nhập" : "Đăng ký"}</h1>
           <p className="mt-1 text-sm text-slate-500">
-            {authMode === "login" ? "Đăng nhập để xem lịch học của nhóm." : "Tạo tài khoản mới bằng email và mật khẩu."}
+            {authMode === "login" ? "Đăng nhập để xem lịch học của nhóm." : "Tạo tài khoản để bắt đầu quản lý lịch học."}
           </p>
           <form onSubmit={submitAuth} className="mt-6 space-y-3">
             <label className="block">
               <span className="text-sm font-bold">Email</span>
               <input type="email" required autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} className={`mt-1 ${field}`} placeholder="email@example.com" />
             </label>
-            <label className="block">
-              <span className="text-sm font-bold">Mật khẩu</span>
-              <input type="password" required minLength={6} autoComplete={authMode === "login" ? "current-password" : "new-password"} value={password} onChange={(e) => setPassword(e.target.value)} className={`mt-1 ${field}`} placeholder="Tối thiểu 6 ký tự" />
-            </label>
+
+            <div>
+              <label className="block text-sm font-bold" htmlFor="auth-password">Mật khẩu</label>
+              <div className="relative mt-1">
+                <input
+                  id="auth-password"
+                  type={showPassword ? "text" : "password"}
+                  required
+                  minLength={MIN_PASSWORD}
+                  autoComplete={authMode === "login" ? "current-password" : "new-password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className={`${field} pr-14`}
+                  placeholder={authMode === "login" ? "Nhập mật khẩu" : `Tối thiểu ${MIN_PASSWORD} ký tự`}
+                />
+                {/* Sits inside the field's padding so the input keeps its full height. */}
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((v) => !v)}
+                  aria-label={showPassword ? "Ẩn mật khẩu" : "Hiện mật khẩu"}
+                  aria-pressed={showPassword}
+                  className="absolute inset-y-0 right-0 grid w-12 place-items-center rounded-r-2xl text-slate-400 transition hover:text-slate-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                >
+                  {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
+              </div>
+            </div>
+
+            {authMode === "signup" && (
+              <div>
+                <label className="block text-sm font-bold" htmlFor="auth-confirm">Xác nhận mật khẩu</label>
+                <div className="relative mt-1">
+                  <input
+                    id="auth-confirm"
+                    type={showConfirm ? "text" : "password"}
+                    required
+                    minLength={MIN_PASSWORD}
+                    autoComplete="new-password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    className={`${field} pr-14`}
+                    placeholder="Nhập lại mật khẩu"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirm((v) => !v)}
+                    aria-label={showConfirm ? "Ẩn mật khẩu xác nhận" : "Hiện mật khẩu xác nhận"}
+                    aria-pressed={showConfirm}
+                    className="absolute inset-y-0 right-0 grid w-12 place-items-center rounded-r-2xl text-slate-400 transition hover:text-slate-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                  >
+                    {showConfirm ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
+                </div>
+              </div>
+            )}
+
             {authError && <p className="rounded-2xl bg-red-50 p-3 text-sm text-red-700" role="alert">{authError}</p>}
             <button disabled={authBusy} className={primaryBtn}>
               {authBusy ? "Đang xử lý..." : authMode === "login" ? "Đăng nhập" : "Đăng ký"}
@@ -484,16 +566,19 @@ export default function VioEduApp() {
             <span className="h-px flex-1 bg-slate-200" />hoặc<span className="h-px flex-1 bg-slate-200" />
           </div>
           <div className="space-y-2">
-            {OAUTH.map(({ id, label }) => (
+            {OAUTH.map(({ id, label, Icon }) => (
               <button key={id} type="button" onClick={() => signInOAuth(id)} disabled={oauthBusy !== null}
-                className="min-h-[48px] w-full rounded-2xl border border-slate-200 px-4 font-bold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60">
+                className="relative flex min-h-[48px] w-full items-center justify-center rounded-2xl border border-slate-200 px-12 font-bold text-slate-700 transition hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:cursor-not-allowed disabled:opacity-60">
+                {/* Icon is absolutely placed so the label stays optically centred
+                    and both buttons line up regardless of glyph width. */}
+                <span className="absolute left-4 grid place-items-center"><Icon size={18} /></span>
                 {oauthBusy === id ? "Đang chuyển hướng..." : `Tiếp tục với ${label}`}
               </button>
             ))}
           </div>
           <p className="mt-5 text-center text-sm text-slate-500">
             {authMode === "login" ? "Chưa có tài khoản? " : "Đã có tài khoản? "}
-            <button type="button" onClick={() => { setAuthMode(authMode === "login" ? "signup" : "login"); setAuthError(""); }} className="font-bold text-indigo-600">
+            <button type="button" onClick={() => { setAuthMode(authMode === "login" ? "signup" : "login"); setAuthError(""); setConfirmPassword(""); setShowPassword(false); setShowConfirm(false); }} className="font-bold text-indigo-600">
               {authMode === "login" ? "Đăng ký" : "Đăng nhập"}
             </button>
           </p>

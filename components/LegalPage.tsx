@@ -37,6 +37,10 @@ export function LegalPage({
         <footer className="mt-8 border-t border-slate-200 pt-5 text-center text-sm text-slate-500">
           <p className="font-bold text-slate-700">{APP_NAME}</p>
           <nav className="mt-2 flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
+            <Link href="/terms" className="inline-flex min-h-[44px] items-center px-2 hover:text-indigo-700 hover:underline">
+              Điều khoản sử dụng
+            </Link>
+            <span aria-hidden className="text-slate-300">·</span>
             <Link href="/privacy" className="inline-flex min-h-[44px] items-center px-2 hover:text-indigo-700 hover:underline">
               Chính sách quyền riêng tư
             </Link>

@@ -1,0 +1,28 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1024" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4F46E5"/>
+      <stop offset="1" stop-color="#7C3AED"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="340" y1="480" x2="690" y2="740" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4F46E5"/>
+      <stop offset="1" stop-color="#7C3AED"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1024" height="1024" rx="232" fill="url(#bg)"/>
+
+  <!-- binding tabs, drawn behind the calendar body -->
+  <rect x="332" y="180" width="62" height="150" rx="31" fill="#FFFFFF"/>
+  <rect x="630" y="180" width="62" height="150" rx="31" fill="#FFFFFF"/>
+
+  <!-- calendar body -->
+  <rect x="200" y="258" width="624" height="578" rx="88" fill="#FFFFFF"/>
+
+  <!-- header rule: keeps the shape readable as a calendar at small sizes -->
+  <rect x="200" y="404" width="624" height="18" fill="#C7D2FE"/>
+
+  <!-- check mark -->
+  <path d="M355 630 L466 741 L672 535" stroke="url(#mark)" stroke-width="84"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

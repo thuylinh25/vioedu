@@ -20,3 +20,10 @@ export const DATA_DELETION_RESPONSE_TIME = "";
 export const LAST_UPDATED = "20/09/2026";
 
 export const hasContactEmail = PRIVACY_CONTACT_EMAIL.trim().length > 0;
+
+/**
+ * TODO (owner): optional. Name the law and jurisdiction you actually operate
+ * under, e.g. "pháp luật Việt Nam". Left empty, the terms page says nothing
+ * about governing law rather than inventing one.
+ */
+export const GOVERNING_LAW = "";
