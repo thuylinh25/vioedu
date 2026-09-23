@@ -151,7 +151,8 @@ export default function VioEduApp() {
   /** false khi cơ sở dữ liệu chưa có group_members.user_id. */
   const [linkSupported, setLinkSupported] = useState(true);
   const [onboardDone, setOnboardDone] = useState(false);
-  const [onboard, setOnboard] = useState<{ name: string; groupId: string; newGroup: string }>({ name: "", groupId: "", newGroup: "" });
+  const [onboard, setOnboard] = useState<{ name: string; groupId: string }>({ name: "", groupId: "" });
+  const [onboardError, setOnboardError] = useState("");
   const [sessions, setSessions] = useState<Session[]>([]);
   const [memberCounts, setMemberCounts] = useState<Record<string, number>>({});
   const [groupsLoading, setGroupsLoading] = useState(true);
@@ -170,7 +171,7 @@ export default function VioEduApp() {
   const [studentDetail, setStudentDetail] = useState<Member | null>(null);
   const [moveForm, setMoveForm] = useState<{ member: Member; targetId: string } | null>(null);
   const [groupDelete, setGroupDelete] = useState<{ group: Group; targetId: string } | null>(null);
-  const [groupForm, setGroupForm] = useState<{ mode: "create" | "rename"; id?: string; name: string } | null>(null);
+  const [groupForm, setGroupForm] = useState<{ mode: "create" | "rename"; id?: string; name: string; fromOnboarding?: boolean } | null>(null);
   const [memberForm, setMemberForm] = useState<{ id: string | null; name: string; step2?: boolean; account?: Profile } | null>(null);
   const [scheduleForm, setScheduleForm] = useState<{ id: number | null; memberId: string; time: string; duration: number } | null>(null);
 
@@ -414,11 +415,18 @@ export default function VioEduApp() {
       setGroups((v) => [...v, data as Group]);
       setMemberCounts((c) => ({ ...c, [(data as Group).id]: 0 }));
       setGroupId((data as Group).id);
+      const fromOnboarding = groupForm.fromOnboarding;
       setGroupForm(null);
-      // Bước 2: nhóm vừa tạo còn rỗng, nên mở thẳng ô thêm học sinh thay vì
-      // bắt người dùng tự tìm đường sang tab Học sinh.
-      setTab("people");
-      setMemberForm({ id: null, name: "", step2: true });
+      if (fromOnboarding) {
+        // Onboarding vẫn đang mở: chọn sẵn nhóm vừa tạo và giữ nguyên tên học
+        // sinh người dùng đã gõ, đừng kéo họ sang màn khác.
+        setOnboard((f) => ({ ...f, groupId: (data as Group).id }));
+      } else {
+        // Bước 2: nhóm vừa tạo còn rỗng, nên mở thẳng ô thêm học sinh thay vì
+        // bắt người dùng tự tìm đường sang tab Học sinh.
+        setTab("people");
+        setMemberForm({ id: null, name: "", step2: true });
+      }
       toast(`Đã tạo nhóm "${name}"`);
     } else {
       const targetId = groupForm.id;
@@ -488,24 +496,20 @@ export default function VioEduApp() {
 
   /** Màn chào lần đầu: đăng ký tên con và chọn nhóm cho con. */
   const submitOnboarding = async () => {
-    if (!supabase) return;
+    if (!supabase || busy) return; // busy chặn bấm liên tiếp tạo hai học sinh
     const name = onboard.name.trim();
-    if (!name) return;
-    const newGroupName = onboard.newGroup.trim();
-    if (!onboard.groupId && groups.length === 0 && !newGroupName) return;
+    if (!name) { setOnboardError("Hãy nhập tên học sinh."); return; }
+    const gid = onboard.groupId || groups[0]?.id || "";
+    if (!gid) { setOnboardError("Hãy chọn hoặc tạo một nhóm học."); return; }
+    setOnboardError("");
     setBusy(true);
-    const chosen = onboard.groupId || groups[0]?.id || "__new__";
-    let gid = chosen === "__new__" ? "" : chosen;
-    if (!gid) {
-      const g = await supabase.from("groups").insert({ name: newGroupName, owner_id: userId }).select("id,name,owner_id").single();
-      if (g.error) { setBusy(false); toast(g.error.message, "err"); return; }
-      gid = (g.data as Group).id;
-    }
     const row: Record<string, unknown> = { group_id: gid, name };
     if (linkSupported) row.user_id = userId;
     const { error } = await supabase.from("group_members").insert(row);
     setBusy(false);
-    if (error) { toast(error.message, "err"); return; }
+    // Lỗi thì giữ nguyên dữ liệu đã nhập và không đánh dấu onboarding xong,
+    // để người dùng thử lại ngay tại chỗ.
+    if (error) { setOnboardError(error.message); return; }
     setOnboardDone(true);
     await loadGroups();
     setGroupId(gid);
@@ -513,10 +517,13 @@ export default function VioEduApp() {
     toast(`Đã thêm ${name} vào nhóm`);
   };
 
-  const skipOnboarding = () => {
+  /** Không phải bỏ qua: chuyển thẳng sang màn Học sinh để thêm nhiều học sinh. */
+  const manageManyStudents = () => {
     setOnboardDone(true);
-    // Nhớ theo từng tài khoản, để lần mở sau không hỏi lại người đã từ chối.
+    // Nhớ theo từng tài khoản, để lần mở sau không hỏi lại.
     try { localStorage.setItem("vioedu.welcome." + userId, "1"); } catch {}
+    setTab("people");
+    setMemberForm({ id: null, name: "" });
   };
 
   // ---- members ------------------------------------------------------------
@@ -792,53 +799,67 @@ export default function VioEduApp() {
 
   const showDateStrip = tab === "home" && groups.length > 0;
 
-  // Lần đầu đăng nhập: tài khoản chưa gắn với học sinh nào. Hỏi tên con và
-  // nhóm ngay, thay vì thả thẳng vào một màn lịch trống không rõ phải làm gì.
-  const onboardGroup = onboard.groupId || groups[0]?.id || "__new__";
+  // Cùng một form tạo nhóm cho onboarding và cho màn Cài đặt, nên không có hai
+  // đường tạo nhóm khác nhau.
+  const groupFormSheet = (
+      <Sheet open={!!groupForm} title={groupForm?.mode === "rename" ? "Đổi tên nhóm" : "Bước 1 · Tạo nhóm mới"} onClose={() => setGroupForm(null)}>
+        <label className="block">
+          <span className="text-sm font-bold">Tên nhóm</span>
+          <input autoFocus value={groupForm?.name ?? ""} onChange={(e) => setGroupForm((f) => (f ? { ...f, name: e.target.value } : f))}
+            onKeyDown={(e) => { if (e.key === "Enter") void submitGroup(); }} className={`mt-1 ${field}`} placeholder="Ví dụ: Nhóm 1" />
+        </label>
+        <button disabled={busy || !groupForm?.name.trim()} onClick={submitGroup} className={`mt-5 ${primaryBtn}`}>
+          {busy ? "Đang lưu..." : groupForm?.mode === "rename" ? "Lưu tên nhóm" : "Tạo nhóm và tiếp tục"}
+        </button>
+      </Sheet>
+  );
+
+  // Lần đầu đăng nhập: tài khoản chưa gắn với học sinh nào. Hỏi ngay học sinh
+  // đầu tiên, thay vì thả thẳng vào một màn lịch trống không rõ phải làm gì.
+  const onboardGroup = onboard.groupId || groups[0]?.id || "";
   if (linkSupported && !onboardDone && !groupsLoading && !studentNames[userId]) {
     return (
-      <div className="grid min-h-screen place-items-center bg-gradient-to-br from-slate-100 via-slate-50 to-indigo-50 p-5">
+      <div className="grid min-h-screen place-items-center overflow-y-auto bg-gradient-to-br from-slate-100 via-slate-50 to-indigo-50 p-5">
         <div className="w-full max-w-sm rounded-[28px] bg-white p-6 shadow-xl sm:p-8">
           <p className="text-xs font-bold uppercase tracking-[.2em] text-indigo-500">VioEdu</p>
-          <h1 className="mt-2 text-2xl font-extrabold">Chào {userName || userEmail}</h1>
-          <p className="mt-1 text-sm text-slate-500">Cho biết tên con và nhóm học của con để bắt đầu.</p>
+          <h1 className="mt-2 text-2xl font-extrabold">Thiết lập hồ sơ học sinh</h1>
+          <p className="mt-1 text-sm text-slate-500">Thêm học sinh đầu tiên để bắt đầu lên lịch học.</p>
 
           <div className="mt-6 space-y-4">
             <label className="block">
-              <span className="text-sm font-bold">Tên con</span>
-              <input autoFocus value={onboard.name} onChange={(e) => setOnboard((f) => ({ ...f, name: e.target.value }))}
+              <span className="text-sm font-bold">Tên học sinh</span>
+              <input autoFocus value={onboard.name}
+                onChange={(e) => { setOnboard((f) => ({ ...f, name: e.target.value })); if (onboardError) setOnboardError(""); }}
                 onKeyDown={(e) => { if (e.key === "Enter") void submitOnboarding(); }}
                 className={`mt-1 ${field}`} placeholder="Ví dụ: Đỗ An Nguyên" />
+              {onboardError && <span className="mt-1 block text-sm text-red-600">{onboardError}</span>}
             </label>
 
             <label className="block">
               <span className="text-sm font-bold">Nhóm học</span>
-              <select value={onboardGroup} onChange={(e) => setOnboard((f) => ({ ...f, groupId: e.target.value }))}
-                className={`mt-1 ${field}`}>
+              {/* select gốc của trình duyệt: trên di động nó đã mở đúng kiểu
+                  bản địa, không cần thêm thư viện chỉ để đổi vẻ ngoài. */}
+              <select value={onboardGroup} className={`mt-1 ${field}`}
+                onChange={(e) => {
+                  if (e.target.value === "__new__") { setGroupForm({ mode: "create", name: "", fromOnboarding: true }); return; }
+                  setOnboard((f) => ({ ...f, groupId: e.target.value }));
+                }}>
+                {groups.length === 0 && <option value="">Chưa có nhóm nào</option>}
                 {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
                 <option value="__new__">+ Tạo nhóm mới</option>
               </select>
             </label>
 
-            {onboardGroup === "__new__" && (
-              <label className="block">
-                <span className="text-sm font-bold">Tên nhóm mới</span>
-                <input value={onboard.newGroup} onChange={(e) => setOnboard((f) => ({ ...f, newGroup: e.target.value }))}
-                  className={`mt-1 ${field}`} placeholder="Ví dụ: Nhóm 1" />
-              </label>
-            )}
-
-            <button
-              disabled={busy || !onboard.name.trim() || (onboardGroup === "__new__" && !onboard.newGroup.trim())}
-              onClick={submitOnboarding} className={primaryBtn}>
-              {busy ? "Đang lưu..." : "Bắt đầu"}
+            <button disabled={busy} onClick={submitOnboarding} className={primaryBtn}>
+              {busy ? "Đang lưu..." : "Tiếp tục"}
             </button>
-            {/* Tài khoản quản lý nhiều học sinh thì không có "con" nào để khai. */}
-            <button type="button" onClick={skipOnboarding} className="min-h-[44px] w-full text-sm font-bold text-slate-500">
-              Bỏ qua, tôi quản lý nhiều học sinh
+            {/* Không phải bỏ qua: đây là đường đi của người quản lý nhiều học sinh. */}
+            <button type="button" onClick={manageManyStudents} className="min-h-[44px] w-full text-sm font-bold text-slate-500 transition hover:text-slate-700">
+              Tôi quản lý nhiều học sinh
             </button>
           </div>
         </div>
+        {groupFormSheet}
       </div>
     );
   }
@@ -1331,16 +1352,7 @@ export default function VioEduApp() {
         <p className="mt-4 text-center text-xs text-slate-500">Tạo, đổi tên hay xóa nhóm ở tab Cài đặt.</p>
       </Sheet>
 
-      <Sheet open={!!groupForm} title={groupForm?.mode === "rename" ? "Đổi tên nhóm" : "Bước 1 · Tạo nhóm mới"} onClose={() => setGroupForm(null)}>
-        <label className="block">
-          <span className="text-sm font-bold">Tên nhóm</span>
-          <input autoFocus value={groupForm?.name ?? ""} onChange={(e) => setGroupForm((f) => (f ? { ...f, name: e.target.value } : f))}
-            onKeyDown={(e) => { if (e.key === "Enter") void submitGroup(); }} className={`mt-1 ${field}`} placeholder="Ví dụ: Nhóm 1" />
-        </label>
-        <button disabled={busy || !groupForm?.name.trim()} onClick={submitGroup} className={`mt-5 ${primaryBtn}`}>
-          {busy ? "Đang lưu..." : groupForm?.mode === "rename" ? "Lưu tên nhóm" : "Tạo nhóm và tiếp tục"}
-        </button>
-      </Sheet>
+      {groupFormSheet}
 
       <Sheet open={!!memberForm}
         title={memberForm?.id ? "Đổi tên học sinh" : memberForm?.step2 ? "Bước 2 · Thêm học sinh" : "Thêm học sinh"}
