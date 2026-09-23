@@ -40,6 +40,9 @@ function friendlyAuthError(raw: string): string {
   // Độ dài tối thiểu do Supabase cấu hình, không do ứng dụng đặt ra, nên đừng nói ra một con số có thể sai.
   if (m.includes("password should be at least") || m.includes("password is too short")) return "Máy chủ từ chối vì mật khẩu quá ngắn.";
   if (m.includes("unable to validate email") || m.includes("invalid email")) return "Địa chỉ email không hợp lệ.";
+  // Hạn mức thư khác hẳn hạn mức đăng nhập: nó là quota gửi mail của dự án,
+  // người dùng có đợi cũng không tự hết nếu vẫn bật xác nhận email.
+  if (m.includes("email rate limit")) return "Dự án đã hết hạn mức gửi email xác nhận. Tắt \"Confirm email\" trong Supabase, hoặc đợi khoảng một giờ.";
   if (m.includes("rate limit") || m.includes("too many requests")) return "Bạn đã thử quá nhiều lần. Vui lòng đợi một lát rồi thử lại.";
   if (m.includes("failed to fetch") || m.includes("network")) return "Không kết nối được máy chủ. Kiểm tra kết nối mạng rồi thử lại.";
   return "Không thể xử lý yêu cầu lúc này. Vui lòng thử lại.";
