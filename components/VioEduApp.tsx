@@ -1368,6 +1368,7 @@ export default function VioEduApp() {
                             <RowMenu
                               label={`Tùy chọn cho nhóm ${g.name}`}
                               items={[
+                                { label: "Xem học sinh", icon: <UsersRound size={15} />, onSelect: () => { setGroupId(g.id); setTab("people"); } },
                                 { label: "Đổi tên nhóm", icon: <Pencil size={15} />, onSelect: () => setGroupForm({ mode: "rename", id: g.id, name: g.name }) },
                                 { label: "Xóa nhóm", icon: <Trash2 size={15} />, danger: true, onSelect: () => askDeleteGroup(g) },
                               ]}
@@ -1455,7 +1456,11 @@ export default function VioEduApp() {
             </button>
           ))}
         </div>
-        <p className="mt-4 text-center text-xs text-slate-500">Tạo, đổi tên hay xóa nhóm ở tab Cài đặt.</p>
+        <button onClick={() => { setShowGroupPicker(false); setTab("people"); }}
+          className="mt-3 flex min-h-[48px] w-full items-center justify-center gap-2 rounded-2xl bg-slate-100 font-bold text-slate-700 transition hover:bg-slate-200">
+          <UsersRound size={17} />Xem học sinh của nhóm
+        </button>
+        <p className="mt-3 text-center text-xs text-slate-500">Tạo, đổi tên hay xóa nhóm ở tab Cài đặt.</p>
       </Sheet>
 
       {groupFormSheet}
