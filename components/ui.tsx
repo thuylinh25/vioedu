@@ -87,7 +87,11 @@ export function Sheet({
   );
 }
 
-export type ConfirmState = { title: string; body: string; confirmLabel: string; onConfirm: () => void } | null;
+/** cancelLabel / busyLabel / tone để hộp thoại dùng được cho cả việc không phải xóa. */
+export type ConfirmState = {
+  title: string; body: string; confirmLabel: string; onConfirm: () => void;
+  cancelLabel?: string; busyLabel?: string; tone?: "danger" | "primary";
+} | null;
 
 export function ConfirmDialog({ state, busy, onClose }: { state: ConfirmState; busy: boolean; onClose: () => void }) {
   return (
@@ -98,14 +102,16 @@ export function ConfirmDialog({ state, busy, onClose }: { state: ConfirmState; b
           onClick={onClose}
           className="min-h-[44px] flex-1 rounded-2xl bg-slate-100 px-4 font-bold text-slate-700"
         >
-          Hủy
+          {state?.cancelLabel ?? "Hủy"}
         </button>
         <button
           disabled={busy}
           onClick={() => state?.onConfirm()}
-          className="min-h-[44px] flex-1 rounded-2xl bg-red-600 px-4 font-bold text-white disabled:opacity-60"
+          className={`min-h-[44px] flex-1 rounded-2xl px-4 font-bold text-white disabled:opacity-60 ${
+            state?.tone === "primary" ? "bg-indigo-600" : "bg-red-600"
+          }`}
         >
-          {busy ? "Đang xóa..." : state?.confirmLabel}
+          {busy ? state?.busyLabel ?? "Đang xóa..." : state?.confirmLabel}
         </button>
       </div>
     </Sheet>

@@ -515,13 +515,28 @@ export default function VioEduApp() {
   };
 
   /** Màn chào lần đầu: đăng ký tên con và chọn nhóm cho con. */
-  const submitOnboarding = async () => {
+  const submitOnboarding = async (force = false) => {
     if (!supabase || busy) return; // busy chặn bấm liên tiếp tạo hai học sinh
     const name = onboard.name.trim();
     if (!name) { setOnboardError("Hãy nhập tên học sinh."); return; }
     const gid = onboard.groupId || groups[0]?.id || "";
     if (!gid) { setOnboardError("Hãy chọn hoặc tạo một nhóm học."); return; }
     setOnboardError("");
+    // Trùng tên trong cùng nhóm thường là thêm nhầm lần hai, nhưng hai học sinh
+    // trùng tên vẫn có thật, nên hỏi lại chứ không chặn.
+    const clash = (groupStudentNames[gid] ?? []).find((x) => x.trim().toLowerCase() === name.toLowerCase());
+    if (clash && !force) {
+      setConfirm({
+        title: "Đã có học sinh cùng tên",
+        body: `${groups.find((g) => g.id === gid)?.name ?? "Nhóm này"} đã có học sinh tên ${clash}. Bạn vẫn muốn thêm học sinh này?`,
+        cancelLabel: "Quay lại",
+        confirmLabel: "Vẫn thêm",
+        busyLabel: "Đang lưu...",
+        tone: "primary",
+        onConfirm: () => { setConfirm(null); void submitOnboarding(true); },
+      });
+      return;
+    }
     setBusy(true);
     const row: Record<string, unknown> = { group_id: gid, name };
     if (linkSupported) row.user_id = userId;
@@ -530,6 +545,7 @@ export default function VioEduApp() {
     // Lỗi thì giữ nguyên dữ liệu đã nhập và không đánh dấu onboarding xong,
     // để người dùng thử lại ngay tại chỗ.
     if (error) { setOnboardError(error.message); return; }
+    setGroupStudentNames((n) => ({ ...n, [gid]: [...(n[gid] ?? []), name] }));
     setOnboardDone(true);
     await loadGroups();
     setGroupId(gid);
@@ -881,7 +897,7 @@ export default function VioEduApp() {
                 return (
                   <span className="mt-2 block text-xs text-slate-500">
                     {inGroup.length} học sinh trong nhóm
-                    <span className="mt-0.5 block break-words text-slate-400">
+                    <span className="mt-0.5 block break-words text-slate-600">
                       {shown}{rest > 0 ? ` +${rest}` : ""}
                     </span>
                   </span>
@@ -889,16 +905,17 @@ export default function VioEduApp() {
               })())}
             </label>
 
-            <button disabled={busy} onClick={submitOnboarding} className={primaryBtn}>
+            <button disabled={busy} onClick={() => void submitOnboarding()} className={primaryBtn}>
               {busy ? "Đang lưu..." : "Tiếp tục"}
             </button>
             {/* Dẫn sang màn Học sinh để thêm nhiều học sinh, chứ không bỏ trống hồ sơ. */}
             <button type="button" onClick={manageManyStudents} className="min-h-[44px] w-full text-sm font-bold text-slate-500 transition hover:text-slate-700">
-              Bỏ qua
+              Tôi quản lý nhiều học sinh
             </button>
           </div>
         </div>
         {groupFormSheet}
+        <ConfirmDialog state={confirm} busy={busy} onClose={() => { if (!busy) setConfirm(null); }} />
       </div>
     );
   }
@@ -932,7 +949,9 @@ export default function VioEduApp() {
                 <h1 className="mt-1 truncate text-2xl font-extrabold">{TAB_TITLE[tab]}</h1>
               )}
             </div>
-            {tab === "home" && (
+            {/* Mọi tab trừ Cài đặt: ở đó đã có sẵn khối tài khoản, thêm avatar
+                nữa là hai lối vào cùng một chỗ. */}
+            {tab !== "settings" && (
               <button onClick={() => setShowAccount(true)} aria-haspopup="dialog"
                 aria-label={`Tài khoản ${userName || userEmail}`}
                 className="grid h-11 w-11 shrink-0 place-items-center rounded-full transition hover:bg-white/15">
