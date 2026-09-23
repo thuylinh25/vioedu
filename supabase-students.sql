@@ -9,6 +9,25 @@
 -- thuộc nhóm nào. Migration này CỘNG THÊM chứ không đổi cột cũ, nên ứng dụng
 -- đang chạy không hỏng; trigger bên dưới giữ hai bên khớp nhau.
 
+-- Dự án này từng có một bảng students khác, do supabase.sql (đã lỗi thời) tạo:
+-- id bigint, name text, không có user_id. Nếu nó còn đó thì "create table if not
+-- exists" bỏ qua lệnh tạo bên dưới và mọi thứ sau đó gãy. Đổi tên nó ra chỗ khác
+-- thay vì xóa, để không mất dữ liệu của ai.
+do $LEGACY$
+begin
+  if exists (
+        select 1 from information_schema.tables
+        where table_schema = 'public' and table_name = 'students'
+     )
+     and not exists (
+        select 1 from information_schema.columns
+        where table_schema = 'public' and table_name = 'students' and column_name = 'user_id'
+     )
+  then
+    alter table public.students rename to students_legacy;
+  end if;
+end $LEGACY$;
+
 create table if not exists public.students (
   id         uuid primary key default gen_random_uuid(),
   name       text not null,
