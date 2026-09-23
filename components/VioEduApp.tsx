@@ -66,13 +66,14 @@ const TAB_TITLE: Record<Tab, string> = { home: "Lịch học", people: "Học si
 const DURATIONS = [20, 30, 45, 60, 90];
 /** Thời điểm bắt đầu của một buổi, để so với hiện tại. */
 const startsAt = (s: { date: string; time: string }) => new Date(`${s.date}T${s.time}`).getTime();
-/** Tên học sinh của một tài khoản khi hồ sơ trong nhóm không còn: tên đã đặt,
- *  nếu không thì phần trước @ của email. */
+/** Tên học sinh đã đặt cho một tài khoản, hoặc rỗng nếu chưa từng đặt.
+ *  Bản backfill của profiles lấy phần trước @ của email làm full_name, nên một
+ *  giá trị trùng đúng phần đó không phải tên học sinh mà chỉ là email viết lại. */
 function accountStudentName(p: Profile): string {
   const full = (p.full_name ?? "").trim();
-  if (full) return full;
-  const email = (p.email ?? "").trim();
-  return email ? email.split("@")[0] : "Học sinh";
+  if (!full) return "";
+  const local = (p.email ?? "").trim().split("@")[0];
+  return full.toLowerCase() === local.toLowerCase() ? "" : full;
 }
 
 /** Chữ viết tắt cho avatar: hai từ cuối của tên, vì tên tiếng Việt để họ trước
@@ -241,7 +242,9 @@ export default function VioEduApp() {
     for (const st of knownStudents) byKey.set(st.user_id ?? st.name.trim().toLowerCase(), st);
     for (const prof of profiles) {
       if (byKey.has(prof.id)) continue;
-      byKey.set(prof.id, { name: studentNames[prof.id]?.trim() || accountStudentName(prof), user_id: prof.id });
+      const name = studentNames[prof.id]?.trim() || accountStudentName(prof);
+      if (!name) continue;
+      byKey.set(prof.id, { name, user_id: prof.id });
     }
     return [...byKey.values()];
   })();
@@ -1562,7 +1565,7 @@ export default function VioEduApp() {
             )}
             {studentOptions.length === 0 ? (
               <p className="rounded-2xl bg-slate-50 px-3 py-4 text-sm text-slate-500">
-                Chưa có học sinh nào để thêm vào nhóm này. Học sinh xuất hiện ở đây sau khi được tạo ở một nhóm khác, hoặc khi tự đăng nhập và đặt tên của mình.
+                Chưa có học sinh nào để thêm vào nhóm này. Học sinh xuất hiện ở đây sau khi tự đăng nhập và đặt tên của mình, hoặc khi đã có trong một nhóm khác.
               </p>
             ) : (
               <div className="space-y-1">
@@ -1572,14 +1575,7 @@ export default function VioEduApp() {
                     <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-indigo-50 text-base font-extrabold text-indigo-700">
                       {initials(st.name)}
                     </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate font-bold">{st.name}</span>
-                      {/* Tài khoản chưa từng đặt tên học sinh: tên đang hiện là suy ra
-                          từ email, nên nói rõ để còn đặt lại cho đúng. */}
-                      {st.user_id && !studentNames[st.user_id] && (
-                        <span className="block text-xs text-slate-400">chưa đặt tên học sinh</span>
-                      )}
-                    </span>
+                    <span className="min-w-0 flex-1 truncate font-bold">{st.name}</span>
                     <span className="shrink-0 px-2 text-sm font-bold text-indigo-600">
                       {linkingId === (st.user_id ?? st.name) ? "Đang thêm..." : "Thêm"}
                     </span>
