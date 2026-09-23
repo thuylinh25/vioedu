@@ -478,17 +478,19 @@ export default function VioEduApp() {
     // Nhóm còn học sinh: chỉ cho chuyển họ đi rồi mới xóa. Học sinh không phải
     // là thứ đi kèm cái nhóm, nên không bị xóa theo nó trong bất kỳ trường hợp nào.
     if (others.length > 0) { setGroupDelete({ group: target, targetId: others[0].id }); return; }
-    toast(
-      `Nhóm còn ${count} học sinh và đây là nhóm duy nhất. Hãy tạo nhóm khác để chuyển họ sang, hoặc xóa từng học sinh ở tab Học sinh trước.`,
-      "err",
-    );
+    // Không còn nhóm nào để chuyển sang: chỉ còn cách xóa kèm, và hộp xác nhận
+    // nói thẳng học sinh sẽ mất.
+    confirmDeleteGroup(target);
   };
 
   const confirmDeleteGroup = (target: Group) => {
+    const count = memberCounts[target.id] ?? 0;
     setConfirm({
       title: `Xóa nhóm "${target.name}"?`,
-      body: "Nhóm này không còn học sinh nào. Lịch học của nhóm sẽ bị xóa. Không thể hoàn tác.",
-      confirmLabel: "Xóa nhóm",
+      body: count > 0
+        ? `${count} học sinh trong nhóm này và toàn bộ lịch học của họ sẽ bị xóa vĩnh viễn. Không thể hoàn tác.`
+        : "Nhóm này không còn học sinh nào. Lịch học của nhóm sẽ bị xóa. Không thể hoàn tác.",
+      confirmLabel: count > 0 ? "Xóa cả học sinh" : "Xóa nhóm",
       onConfirm: async () => {
         if (!supabase) return;
         setConfirmBusy(true);
@@ -496,6 +498,8 @@ export default function VioEduApp() {
         // would otherwise leave the UI claiming success.
         const schedulesDel = await supabase.from("schedules").delete().eq("group_id", target.id);
         if (schedulesDel.error) { setConfirmBusy(false); setConfirm(null); toast(schedulesDel.error.message, "err"); return; }
+        const membersDel = await supabase.from("group_members").delete().eq("group_id", target.id);
+        if (membersDel.error) { setConfirmBusy(false); setConfirm(null); toast(membersDel.error.message, "err"); return; }
         const { error } = await supabase.from("groups").delete().eq("id", target.id);
         setConfirmBusy(false); setConfirm(null);
         if (error) { toast(error.message, "err"); return; }
@@ -1706,7 +1710,7 @@ export default function VioEduApp() {
 
       <Sheet open={!!groupDelete} title={`Xóa nhóm "${groupDelete?.group.name ?? ""}"`} onClose={() => setGroupDelete(null)}>
         <p className="text-sm leading-relaxed text-slate-600">
-          Nhóm này còn <b>{memberCounts[groupDelete?.group.id ?? ""] ?? 0} học sinh</b>. Họ sẽ được chuyển sang nhóm khác cùng lịch học, không bị xóa.
+          Nhóm này còn <b>{memberCounts[groupDelete?.group.id ?? ""] ?? 0} học sinh</b>. Chuyển họ sang nhóm khác để giữ lại cùng lịch học, hoặc xóa tất cả.
         </p>
         <label className="mt-4 block">
           <span className="text-sm font-bold">Chuyển học sinh sang nhóm</span>
@@ -1719,6 +1723,13 @@ export default function VioEduApp() {
         </label>
         <button disabled={busy || !groupDelete?.targetId} onClick={moveAllThenDelete} className={`mt-4 ${primaryBtn}`}>
           {busy ? "Đang chuyển..." : "Chuyển học sinh rồi xóa nhóm"}
+        </button>
+        <div className="my-4 h-px bg-slate-200" />
+        {/* Lối thứ hai, cố ý kém nổi bật hơn: nó xóa cả người chứ không chỉ cái nhóm. */}
+        <button disabled={busy}
+          onClick={() => { const g = groupDelete!.group; setGroupDelete(null); confirmDeleteGroup(g); }}
+          className="min-h-[48px] w-full rounded-2xl bg-red-50 px-4 font-bold text-red-600 transition hover:bg-red-100 disabled:opacity-50">
+          Xóa nhóm cùng toàn bộ học sinh
         </button>
       </Sheet>
 
