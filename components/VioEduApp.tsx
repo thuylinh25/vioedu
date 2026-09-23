@@ -17,6 +17,8 @@ type Group = { id: string; name: string; owner_id: string };
 type Member = { id: string; group_id: string; name: string; user_id?: string | null };
 /** Một tài khoản đã đăng nhập, đọc từ bảng public.profiles. */
 type Profile = { id: string; email: string | null; full_name: string | null; avatar_url: string | null };
+/** Một học sinh đã tồn tại ở đâu đó trong các nhóm — nguồn duy nhất của tên học sinh. */
+type Student = { name: string; user_id: string | null };
 type Session = {
   id: number; date: string; memberId: string | null;
   memberName: string; time: string; duration: number; done: boolean;
@@ -121,6 +123,8 @@ export default function VioEduApp() {
   const [profilesError, setProfilesError] = useState("");
   /** user_id → tên học sinh mà tài khoản đó đang mang trong các nhóm. */
   const [studentNames, setStudentNames] = useState<Record<string, string>>({});
+  /** Mọi học sinh đã có trong bất kỳ nhóm nào, không trùng tên. */
+  const [knownStudents, setKnownStudents] = useState<Student[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [memberCounts, setMemberCounts] = useState<Record<string, number>>({});
   const [groupsLoading, setGroupsLoading] = useState(true);
@@ -162,11 +166,15 @@ export default function VioEduApp() {
   // "thêm chính mình" vẫn chạy được khi chưa chạy supabase-profiles.sql.
   const selfProfile: Profile = { id: userId, email: userEmail || null, full_name: userName || null, avatar_url: userAvatar || null };
   const selfIsMember = takenUserIds.has(userId) || takenNames.has(profileName(selfProfile).toLowerCase());
-  const otherProfiles = availableProfiles.filter((p) => p.id !== userId);
+  const otherProfiles = availableProfiles.filter((p) => p.id !== userId && !studentNames[p.id]);
+  // Học sinh đã có ở nhóm khác và chưa có trong nhóm đang mở.
+  const studentOptions = knownStudents.filter(
+    (st) => !takenNames.has(st.name.trim().toLowerCase()) && !(st.user_id && takenUserIds.has(st.user_id)),
+  );
   /** Tên để hiện cho một tài khoản: tên học sinh nếu đã biết, nếu chưa thì tên tài khoản. */
   const accountLabel = (prof: Profile) => studentNames[prof.id]?.trim() || profileName(prof);
   const accountOptions = [
-    ...(selfIsMember ? [] : [profiles.find((p) => p.id === userId) ?? selfProfile]),
+    ...(selfIsMember || studentNames[userId] ? [] : [profiles.find((p) => p.id === userId) ?? selfProfile]),
     ...otherProfiles,
   ];
 
@@ -199,12 +207,21 @@ export default function VioEduApp() {
     if (!counts.error) {
       const tally: Record<string, number> = {};
       const names: Record<string, string> = {};
+      // Gộp theo tên: cùng một học sinh có mặt ở nhiều nhóm chỉ hiện một lần,
+      // và bản ghi nào có gắn tài khoản thì được ưu tiên giữ lại.
+      const students = new Map<string, Student>();
       for (const row of (counts.data ?? []) as Tally[]) {
         tally[row.group_id] = (tally[row.group_id] ?? 0) + 1;
         if (row.user_id && row.name) names[row.user_id] = row.name;
+        const name = row.name?.trim();
+        if (!name) continue;
+        const key = name.toLowerCase();
+        const seen = students.get(key);
+        if (!seen || (!seen.user_id && row.user_id)) students.set(key, { name, user_id: row.user_id ?? null });
       }
       setMemberCounts(tally);
       setStudentNames(names);
+      setKnownStudents([...students.values()]);
     }
   }, []);
 
@@ -282,7 +299,7 @@ export default function VioEduApp() {
       if (loadedUser.current === (u?.id ?? null)) return;
       loadedUser.current = u?.id ?? null;
       if (u) { void loadGroups(); void loadProfiles(); }
-      else { setGroups([]); setGroupId(""); setMembers([]); setSessions([]); setProfiles([]); setProfilesError(""); setStudentNames({}); setGroupsLoading(false); }
+      else { setGroups([]); setGroupId(""); setMembers([]); setSessions([]); setProfiles([]); setProfilesError(""); setStudentNames({}); setKnownStudents([]); setGroupsLoading(false); }
     };
     supabase.auth.getSession().then(({ data }) => apply(data.session));
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
@@ -438,6 +455,20 @@ export default function VioEduApp() {
       toast(`Đã thêm ${name}`);
     }
     setMemberForm(null);
+  };
+
+  /** Học sinh đã có tên ở nhóm khác: thêm thẳng, không hỏi lại tên. */
+  const addKnownStudent = async (st: Student) => {
+    if (!supabase || !groupId) return;
+    setBusy(true);
+    const row: Record<string, unknown> = { group_id: groupId, name: st.name };
+    if (st.user_id && memberCols.current === MEMBER_COLS) row.user_id = st.user_id;
+    const { data, error } = await supabase.from("group_members").insert(row).select(memberCols.current).single();
+    setBusy(false);
+    if (error) { toast(error.message, "err"); return; }
+    setMembers((v) => [...v, data as unknown as Member]);
+    setMemberCounts((c) => ({ ...c, [groupId]: (c[groupId] ?? 0) + 1 }));
+    toast(`Đã thêm ${st.name}`);
   };
 
   const askDeleteMember = (m: Member) => {
@@ -1155,6 +1186,36 @@ export default function VioEduApp() {
             Đã tạo nhóm <b>{currentGroup?.name}</b>. Thêm thành viên cho nhóm, hoặc đóng để làm sau.
           </p>
         )}
+        {!memberForm?.id && !memberForm?.account && studentOptions.length > 0 && (
+          <div className="mb-5">
+            <p className="mb-2 text-sm font-bold">Học sinh đã có</p>
+            <div className="space-y-1">
+              {studentOptions.map((st) => {
+                const linked = st.user_id ? profiles.find((x) => x.id === st.user_id) : undefined;
+                return (
+                  <button key={st.name} disabled={busy} onClick={() => void addKnownStudent(st)}
+                    className="flex min-h-[56px] w-full items-center gap-3 rounded-2xl px-2 py-2 text-left transition hover:bg-slate-100 disabled:opacity-50">
+                    {linked?.avatar_url ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={linked.avatar_url} alt="" className="h-10 w-10 shrink-0 rounded-2xl object-cover" />
+                    ) : (
+                      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-indigo-50 text-base font-extrabold text-indigo-700">
+                        {st.name.charAt(0).toUpperCase()}
+                      </span>
+                    )}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-bold">{st.name}</span>
+                      <span className="block truncate text-xs text-slate-500">
+                        {linked?.email ?? "Chưa gắn tài khoản"}
+                      </span>
+                    </span>
+                    <Plus size={18} className="shrink-0 text-indigo-600" />
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
         {/* Chỉ khi đang thêm mới: chọn tài khoản của học sinh. Chọn xong vẫn
             phải nhập tên học sinh, vì tên tài khoản (thường là tên phụ huynh)
             không phải tên muốn thấy trong nhóm. */}
@@ -1183,7 +1244,9 @@ export default function VioEduApp() {
             </div>
           ) : (
             <div className="mb-5">
-              <p className="mb-2 text-sm font-bold">Tài khoản đã đăng nhập</p>
+              <p className="mb-2 text-sm font-bold">
+                {studentOptions.length > 0 ? "Hoặc thêm học sinh mới từ tài khoản" : "Tài khoản đã đăng nhập"}
+              </p>
               {profilesError && (
                 <p className="mb-2 rounded-2xl bg-amber-50 px-3 py-3 text-sm text-amber-800">
                   Chưa đọc được danh sách tài khoản. Hãy chạy supabase-profiles.sql trong Supabase → SQL Editor.
@@ -1191,9 +1254,11 @@ export default function VioEduApp() {
                 </p>
               )}
               {accountOptions.length === 0 ? (
-                <p className="rounded-2xl bg-slate-50 px-3 py-3 text-sm text-slate-500">
-                  Mọi tài khoản đã có trong nhóm này.
-                </p>
+                studentOptions.length > 0 ? null : (
+                  <p className="rounded-2xl bg-slate-50 px-3 py-3 text-sm text-slate-500">
+                    Mọi tài khoản đã có trong nhóm này.
+                  </p>
+                )
               ) : (
                 <div className="space-y-1">
                   {accountOptions.map((prof) => (
