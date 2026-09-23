@@ -549,6 +549,10 @@ export default function VioEduApp() {
     setOnboardDone(true);
     await loadGroups();
     setGroupId(gid);
+    // Tải lại thẳng thay vì trông vào effect theo groupId: nếu nhóm vừa thêm
+    // đúng là nhóm đang mở thì groupId không đổi, effect không chạy, và màn
+    // Lịch giữ nguyên danh sách học sinh rỗng đọc từ trước lúc thêm.
+    await loadGroupData(gid);
     setTab("home");
     toast(`Đã thêm ${name} vào nhóm`);
   };
