@@ -64,6 +64,13 @@ const TABS: { id: Tab; icon: typeof Home; label: string }[] = [
 ];
 const TAB_TITLE: Record<Tab, string> = { home: "Lịch học", people: "Học sinh", stats: "Tiến độ", settings: "Cài đặt" };
 const DURATIONS = [20, 30, 45, 60, 90];
+/** Chữ viết tắt cho avatar: hai từ cuối của tên, vì tên tiếng Việt để họ trước
+ *  và "Trần Thanh Phong" được gọi là "Thanh Phong" → TP. Tên một từ thì một chữ. */
+function initials(name: string): string {
+  const words = name.trim().split(" ").filter(Boolean);
+  if (words.length === 0) return "";
+  return words.slice(-2).map((w) => w[0]!.toUpperCase()).join("");
+}
 const subscribeOnline = (cb: () => void) => {
   addEventListener("online", cb);
   addEventListener("offline", cb);
@@ -83,20 +90,14 @@ const primaryBtn = "min-h-[48px] w-full rounded-2xl bg-indigo-600 px-4 font-bold
 
 /** Ảnh đại diện tài khoản. Kích thước do lớp cha quyết định, nên cùng một
  *  component dùng được cho cả nút trên header lẫn hàng trong menu. */
-function AccountAvatar({ name, email, avatar, broken, onBroken, tone, className = "" }: {
-  name: string; email: string; avatar: string;
-  broken: boolean; onBroken: () => void; tone: "onPurple" | "onWhite"; className?: string;
+function AccountAvatar({ name, email, tone, className = "" }: {
+  name: string; email: string; tone: "onPurple" | "onWhite"; className?: string;
 }) {
-  const initial = (name || email).trim().charAt(0).toUpperCase();
-  const box = `shrink-0 overflow-hidden rounded-full ${className}`;
-  if (avatar && !broken) {
-    // eslint-disable-next-line @next/next/no-img-element
-    return <img src={avatar} alt="" onError={onBroken} className={`${box} object-cover`} />;
-  }
+  const initial = initials(name) || (email.trim()[0] ?? "").toUpperCase();
   // Màu nền phải đi theo nền đặt avatar lên: chữ trắng trên nền trắng thì mất hút.
   const fallback = tone === "onPurple" ? "bg-white/25 text-white" : "bg-indigo-100 text-indigo-700";
   return (
-    <span className={`${box} grid place-items-center font-extrabold ${fallback}`}>
+    <span className={`shrink-0 grid place-items-center rounded-full font-extrabold ${fallback} ${className}`}>
       {initial || <User size={18} />}
     </span>
   );
@@ -136,7 +137,6 @@ export default function VioEduApp() {
   const [userId, setUserId] = useState("");
   const [userEmail, setUserEmail] = useState("");
   const [userName, setUserName] = useState("");
-  const [userAvatar, setUserAvatar] = useState("");
   const [userProviders, setUserProviders] = useState<string[]>([]);
   const [authMode, setAuthMode] = useState<"login" | "signup">("login");
   const [email, setEmail] = useState("");
@@ -160,6 +160,9 @@ export default function VioEduApp() {
   /** group_id → tên các học sinh trong nhóm, dựng từ chính lần quét của loadGroups. */
   const [groupStudentNames, setGroupStudentNames] = useState<Record<string, string[]>>({});
   const [countsFailed, setCountsFailed] = useState(false);
+  /** true khi lần quét group_members đã xong. Trước đó chưa biết tài khoản này
+   *  đã có hồ sơ học sinh hay chưa, nên chưa được phép hỏi lại. */
+  const [indexReady, setIndexReady] = useState(false);
   /** Các hồ sơ học sinh gắn trực tiếp với tài khoản đang đăng nhập. */
   const [selfMembers, setSelfMembers] = useState<Member[]>([]);
   /** false khi cơ sở dữ liệu chưa có group_members.user_id. */
@@ -180,8 +183,6 @@ export default function VioEduApp() {
 
   const [showGroupPicker, setShowGroupPicker] = useState(false);
   const [showAccount, setShowAccount] = useState(false);
-  /** Ảnh đại diện có thể hỏng link; khi đó quay về chữ cái đầu. */
-  const [avatarBroken, setAvatarBroken] = useState(false);
   /** user_id của học sinh đang được liên kết, để chỉ khoá đúng hàng đó. */
   const [linkingId, setLinkingId] = useState("");
   const [studentDetail, setStudentDetail] = useState<Member | null>(null);
@@ -208,6 +209,9 @@ export default function VioEduApp() {
   // trên menu avatar lẫn nhãn "Nhóm của bạn" đều đọc từ đây, nên không thể lệch nhau.
   const selfMember = selfMembers[0] ?? null;
   const selfGroupIds = new Set(selfMembers.map((m) => m.group_id));
+  // Tên hiển thị của tài khoản: nếu tài khoản này chính là một học sinh thì lấy
+  // tên học sinh, để chữ cái trên avatar khớp với thẻ học sinh của cùng người.
+  const accountName = selfMember?.name || userName;
 
   // Tài khoản chưa có mặt trong nhóm đang mở. Lọc cả theo tên, vì khi cơ sở dữ
   // liệu chưa có cột user_id thì tên là căn cứ duy nhất để tránh thêm trùng.
@@ -268,6 +272,7 @@ export default function VioEduApp() {
     setKnownStudents([...students.values()]);
     setGroupStudentNames(byGroup);
     setSelfMembers(mine);
+    setIndexReady(true);
   }, [userId]);
 
   const loadGroups = useCallback(async () => {
@@ -340,7 +345,6 @@ export default function VioEduApp() {
         return "";
       };
       setUserName(pick("full_name", "name", "display_name"));
-      setUserAvatar(pick("avatar_url", "picture"));
       const appMeta = (u?.app_metadata ?? {}) as { provider?: unknown; providers?: unknown };
       const list = Array.isArray(appMeta.providers)
         ? appMeta.providers.filter((x): x is string => typeof x === "string")
@@ -351,7 +355,7 @@ export default function VioEduApp() {
       if (loadedUser.current === (u?.id ?? null)) return;
       loadedUser.current = u?.id ?? null;
       if (u) { void loadGroups(); void loadProfiles(); }
-      else { setGroups([]); setGroupId(""); setMembers([]); setSessions([]); setProfiles([]); setProfilesError(""); setStudentNames({}); setKnownStudents([]); setGroupsLoading(false); }
+      else { setGroups([]); setGroupId(""); setMembers([]); setSessions([]); setProfiles([]); setProfilesError(""); setStudentNames({}); setKnownStudents([]); setSelfMembers([]); setIndexReady(false); setGroupsLoading(false); }
     };
     supabase.auth.getSession().then(({ data }) => apply(data.session));
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
@@ -559,13 +563,12 @@ export default function VioEduApp() {
     toast(`Đã thêm ${name} vào nhóm`);
   };
 
-  /** Không phải bỏ qua: chuyển thẳng sang màn Học sinh để thêm nhiều học sinh. */
-  const manageManyStudents = () => {
+  /** Bỏ qua bước thiết lập và vào thẳng màn Lịch. */
+  const skipOnboarding = () => {
     setOnboardDone(true);
     // Nhớ theo từng tài khoản, để lần mở sau không hỏi lại.
     try { localStorage.setItem("vioedu.welcome." + userId, "1"); } catch {}
-    setTab("people");
-    openAddStudent();
+    setTab("home");
   };
 
   // ---- members ------------------------------------------------------------
@@ -626,6 +629,21 @@ export default function VioEduApp() {
     // Hồ sơ có thể nằm ở nhóm khác; đổi nhóm để lịch học trong sheet là của đúng nhóm đó.
     if (selfMember.group_id !== groupId) setGroupId(selfMember.group_id);
     setStudentDetail(selfMember);
+  };
+
+  /** Gắn hồ sơ học sinh đang xem với tài khoản đang đăng nhập. Chỉ mở ra khi
+   *  hàng đó chưa gắn ai và tài khoản này chưa có hồ sơ nào, nên không thể
+   *  cướp hồ sơ của người khác hay tạo hồ sơ thứ hai. */
+  const claimStudent = async (m: Member) => {
+    if (!supabase || !userId || busy) return;
+    setBusy(true);
+    const { error } = await supabase.from("group_members").update({ user_id: userId }).eq("id", m.id);
+    setBusy(false);
+    if (error) { toast(error.message, "err"); return; }
+    setMembers((v) => v.map((x) => (x.id === m.id ? { ...x, user_id: userId } : x)));
+    setStudentDetail(null);
+    await loadMemberIndex();
+    toast(`Đã gắn ${m.name} với tài khoản của bạn`);
   };
 
   const openMove = (m: Member) => {
@@ -873,7 +891,7 @@ export default function VioEduApp() {
   // Lần đầu đăng nhập: tài khoản chưa gắn với học sinh nào. Hỏi ngay học sinh
   // đầu tiên, thay vì thả thẳng vào một màn lịch trống không rõ phải làm gì.
   const onboardGroup = onboard.groupId || groups[0]?.id || "";
-  if (linkSupported && !onboardDone && !groupsLoading && !studentNames[userId]) {
+  if (linkSupported && indexReady && !onboardDone && !groupsLoading && !studentNames[userId]) {
     return (
       <div className="grid min-h-screen place-items-center overflow-y-auto bg-gradient-to-br from-slate-100 via-slate-50 to-indigo-50 p-5">
         <div className="w-full max-w-sm rounded-[28px] bg-white p-6 shadow-xl sm:p-8">
@@ -928,9 +946,8 @@ export default function VioEduApp() {
             <button disabled={busy} onClick={() => void submitOnboarding()} className={primaryBtn}>
               {busy ? "Đang lưu..." : "Tiếp tục"}
             </button>
-            {/* Dẫn sang màn Học sinh để thêm nhiều học sinh, chứ không bỏ trống hồ sơ. */}
-            <button type="button" onClick={manageManyStudents} className="min-h-[44px] w-full text-sm font-bold text-slate-500 transition hover:text-slate-700">
-              Tôi quản lý nhiều học sinh
+            <button type="button" onClick={skipOnboarding} className="min-h-[44px] w-full text-sm font-bold text-slate-500 transition hover:text-slate-700">
+              Bỏ qua
             </button>
           </div>
         </div>
@@ -979,11 +996,10 @@ export default function VioEduApp() {
                 nữa là hai lối vào cùng một chỗ. */}
             {tab !== "settings" && (
               <button onClick={() => setShowAccount(true)} aria-haspopup="dialog"
-                aria-label={`Tài khoản ${userName || userEmail}`}
+                aria-label={`Tài khoản ${accountName || userEmail}`}
                 className="grid h-11 w-11 shrink-0 place-items-center rounded-full transition hover:bg-white/15">
-                <AccountAvatar name={userName} email={userEmail} avatar={userAvatar}
-                  broken={avatarBroken} onBroken={() => setAvatarBroken(true)} tone="onPurple"
-                  className="h-10 w-10 ring-2 ring-white/40" />
+                <AccountAvatar name={accountName} email={userEmail} tone="onPurple"
+                  className="h-10 w-10 text-sm ring-2 ring-white/40" />
               </button>
             )}
           </div>
@@ -1125,7 +1141,7 @@ export default function VioEduApp() {
                           <div className="flex items-start justify-between gap-2">
                             <div className="flex min-w-0 flex-1 gap-3">
                               <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-indigo-50 text-base font-extrabold text-indigo-700">
-                                {x.memberName.trim().charAt(0).toUpperCase() || "?"}
+                                {initials(x.memberName) || "?"}
                               </div>
                               <div className="min-w-0 flex-1">
                                 <b className={`block truncate leading-tight ${x.done ? "text-slate-500 line-through" : ""}`}>{x.memberName}</b>
@@ -1209,7 +1225,7 @@ export default function VioEduApp() {
                             <button onClick={() => setStudentDetail(m)} aria-label={`Xem ${m.name}`}
                               className="flex min-w-0 flex-1 items-center gap-3 rounded-3xl p-4 text-left transition hover:bg-slate-50">
                               <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-indigo-50 text-base font-extrabold text-indigo-700">
-                                {m.name.trim().charAt(0).toUpperCase() || "?"}
+                                {initials(m.name) || "?"}
                               </span>
                               <span className="min-w-0 flex-1">
                                 <b className="block truncate leading-tight">{m.name}</b>
@@ -1308,19 +1324,11 @@ export default function VioEduApp() {
                   <section>
                     <h2 className="mb-2 px-1 text-xs font-bold uppercase tracking-wider text-slate-400">Tài khoản</h2>
                     <div className="flex items-center gap-3 rounded-3xl bg-white p-4 shadow-sm">
-                      {userAvatar ? (
-                        // eslint-disable-next-line @next/next/no-img-element -- avatar is an arbitrary provider URL, not a known next/image domain
-                        <img src={userAvatar} alt="" referrerPolicy="no-referrer"
-                          className="h-12 w-12 shrink-0 rounded-full object-cover"
-                          onError={() => setUserAvatar("")} />
-                      ) : (
-                        <div className="grid h-12 w-12 shrink-0 place-items-center rounded-full bg-indigo-50 text-lg font-extrabold uppercase text-indigo-700">
-                          {(userName || userEmail).trim().charAt(0) || "?"}
-                        </div>
-                      )}
+                      {/* Cùng một icon chữ viết tắt như trên header, không dùng ảnh nhà cung cấp. */}
+                      <AccountAvatar name={accountName} email={userEmail} tone="onWhite" className="h-12 w-12" />
                       <div className="min-w-0 flex-1">
-                        <b className="block truncate">{userName || userEmail || "Tài khoản"}</b>
-                        {userName && userEmail && <p className="truncate text-sm text-slate-500">{userEmail}</p>}
+                        <b className="block truncate">{accountName || userEmail || "Tài khoản"}</b>
+                        {accountName && userEmail && <p className="truncate text-sm text-slate-500">{userEmail}</p>}
                         {/* One badge per linked identity: an account can sign in
                             with a password and still have Google or Facebook linked. */}
                         {userProviders.filter((x) => x !== "email").length > 0 && (
@@ -1399,13 +1407,12 @@ export default function VioEduApp() {
       {/* --- sheets ---------------------------------------------------- */}
       <Sheet open={showAccount} title="Tài khoản" onClose={() => setShowAccount(false)}>
         <div className="flex items-center gap-3 rounded-2xl bg-slate-50 p-3">
-          <AccountAvatar name={userName} email={userEmail} avatar={userAvatar}
-            broken={avatarBroken} onBroken={() => setAvatarBroken(true)} tone="onWhite"
-            className="h-12 w-12 text-lg" />
+          <AccountAvatar name={accountName} email={userEmail} tone="onWhite"
+            className="h-12 w-12" />
           <span className="min-w-0 flex-1">
-            <b className="block truncate">{userName || userEmail}</b>
+            <b className="block truncate">{accountName || userEmail}</b>
             {/* Không lặp lại email làm dòng phụ khi nó đã là dòng chính. */}
-            {userName && <span className="block truncate text-xs text-slate-500">{userEmail}</span>}
+            {accountName && <span className="block truncate text-xs text-slate-500">{userEmail}</span>}
           </span>
         </div>
         <div className="my-3 h-px bg-slate-200" />
@@ -1501,7 +1508,7 @@ export default function VioEduApp() {
                   <button key={st.user_id ?? st.name} disabled={!!linkingId} onClick={() => void addKnownStudent(st)}
                     className="flex min-h-[56px] w-full items-center gap-3 rounded-2xl px-2 py-2 text-left transition hover:bg-slate-100 disabled:opacity-50">
                     <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-indigo-50 text-base font-extrabold text-indigo-700">
-                      {st.name.charAt(0).toUpperCase()}
+                      {initials(st.name)}
                     </span>
                     <span className="min-w-0 flex-1 truncate font-bold">{st.name}</span>
                     <span className="shrink-0 px-2 text-sm font-bold text-indigo-600">
@@ -1559,7 +1566,7 @@ export default function VioEduApp() {
             <div className="space-y-4">
               <div className="flex items-center gap-3 rounded-2xl bg-slate-50 p-3">
                 <span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-indigo-50 text-lg font-extrabold text-indigo-700">
-                  {studentDetail.name.trim().charAt(0).toUpperCase() || "?"}
+                  {initials(studentDetail.name) || "?"}
                 </span>
                 <span className="min-w-0 flex-1">
                   <b className="block truncate">{studentDetail.name}</b>
@@ -1598,6 +1605,12 @@ export default function VioEduApp() {
               </div>
 
               <div className="space-y-2 border-t border-slate-200 pt-4">
+                {!studentDetail.user_id && selfMembers.length === 0 && linkSupported && (
+                  <button onClick={() => void claimStudent(studentDetail)} disabled={busy}
+                    className="flex min-h-[48px] w-full items-center gap-2 rounded-2xl bg-indigo-50 px-4 font-bold text-indigo-700 transition hover:bg-indigo-100 disabled:opacity-50">
+                    <User size={16} />Đây là tôi
+                  </button>
+                )}
                 <button onClick={() => { setStudentDetail(null); setMemberForm({ id: studentDetail.id, name: studentDetail.name }); }}
                   className="flex min-h-[48px] w-full items-center gap-2 rounded-2xl bg-slate-100 px-4 font-bold text-slate-700 transition hover:bg-slate-200">
                   <Pencil size={16} />Sửa thông tin
