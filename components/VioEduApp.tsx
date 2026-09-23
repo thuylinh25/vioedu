@@ -132,7 +132,7 @@ export default function VioEduApp() {
 
   const [showGroupPicker, setShowGroupPicker] = useState(false);
   const [groupForm, setGroupForm] = useState<{ mode: "create" | "rename"; id?: string; name: string } | null>(null);
-  const [memberForm, setMemberForm] = useState<{ id: string | null; name: string } | null>(null);
+  const [memberForm, setMemberForm] = useState<{ id: string | null; name: string; step2?: boolean; account?: Profile } | null>(null);
   const [scheduleForm, setScheduleForm] = useState<{ id: number | null; memberId: string; time: string; duration: number } | null>(null);
 
   /** Guards against a slow response for group A landing after the user switched to B. */
@@ -156,6 +156,15 @@ export default function VioEduApp() {
   const availableProfiles = profiles.filter(
     (p) => !takenUserIds.has(p.id) && !takenNames.has(profileName(p).toLowerCase()),
   );
+  // Tài khoản đang đăng nhập dựng từ phiên, không phụ thuộc bảng profiles, nên
+  // "thêm chính mình" vẫn chạy được khi chưa chạy supabase-profiles.sql.
+  const selfProfile: Profile = { id: userId, email: userEmail || null, full_name: userName || null, avatar_url: userAvatar || null };
+  const selfIsMember = takenUserIds.has(userId) || takenNames.has(profileName(selfProfile).toLowerCase());
+  const otherProfiles = availableProfiles.filter((p) => p.id !== userId);
+  const accountOptions = [
+    ...(selfIsMember ? [] : [profiles.find((p) => p.id === userId) ?? selfProfile]),
+    ...otherProfiles,
+  ];
 
   const mapSchedule = (r: any): Session => ({
     id: r.id,
@@ -343,6 +352,10 @@ export default function VioEduApp() {
       setMemberCounts((c) => ({ ...c, [(data as Group).id]: 0 }));
       setGroupId((data as Group).id);
       setGroupForm(null);
+      // Bước 2: nhóm vừa tạo còn rỗng, nên mở thẳng ô thêm thành viên thay vì
+      // bắt người dùng tự tìm đường sang tab Thành viên.
+      setTab("people");
+      setMemberForm({ id: null, name: "", step2: true });
       toast(`Đã tạo nhóm "${name}"`);
     } else {
       const targetId = groupForm.id;
@@ -398,7 +411,11 @@ export default function VioEduApp() {
       setSessions((v) => v.map((s) => (s.memberId === editingId ? { ...s, memberName: name } : s)));
       toast("Đã đổi tên thành viên");
     } else {
-      const { data, error } = await supabase.from("group_members").insert({ group_id: groupId, name }).select(memberCols.current).single();
+      // Tên lưu vào nhóm là tên học sinh do người dùng nhập, không phải tên tài
+      // khoản. user_id chỉ gửi khi cơ sở dữ liệu đã có cột đó.
+      const row: Record<string, unknown> = { group_id: groupId, name };
+      if (memberForm.account && memberCols.current === MEMBER_COLS) row.user_id = memberForm.account.id;
+      const { data, error } = await supabase.from("group_members").insert(row).select(memberCols.current).single();
       setBusy(false);
       if (error) { toast(error.message, "err"); return; }
       setMembers((v) => [...v, data as unknown as Member]);
@@ -406,23 +423,6 @@ export default function VioEduApp() {
       toast(`Đã thêm ${name}`);
     }
     setMemberForm(null);
-  };
-
-  /** Thêm thẳng một tài khoản đã đăng nhập vào nhóm đang mở. */
-  const addMemberFromAccount = async (prof: Profile) => {
-    if (!supabase || !groupId) return;
-    const name = profileName(prof);
-    setBusy(true);
-    // Chỉ gửi user_id khi cơ sở dữ liệu đã có cột đó, để lần thêm này không
-    // hỏng ở những bản chưa chạy supabase-profiles.sql.
-    const row: Record<string, unknown> = { group_id: groupId, name };
-    if (memberCols.current === MEMBER_COLS) row.user_id = prof.id;
-    const { data, error } = await supabase.from("group_members").insert(row).select(memberCols.current).single();
-    setBusy(false);
-    if (error) { toast(error.message, "err"); return; }
-    setMembers((v) => [...v, data as unknown as Member]);
-    setMemberCounts((c) => ({ ...c, [groupId]: (c[groupId] ?? 0) + 1 }));
-    toast(`Đã thêm ${name}`);
   };
 
   const askDeleteMember = (m: Member) => {
@@ -1121,63 +1121,103 @@ export default function VioEduApp() {
         </button>
       </Sheet>
 
-      <Sheet open={!!groupForm} title={groupForm?.mode === "rename" ? "Đổi tên nhóm" : "Tạo nhóm mới"} onClose={() => setGroupForm(null)}>
+      <Sheet open={!!groupForm} title={groupForm?.mode === "rename" ? "Đổi tên nhóm" : "Bước 1 · Tạo nhóm mới"} onClose={() => setGroupForm(null)}>
         <label className="block">
           <span className="text-sm font-bold">Tên nhóm</span>
           <input autoFocus value={groupForm?.name ?? ""} onChange={(e) => setGroupForm((f) => (f ? { ...f, name: e.target.value } : f))}
             onKeyDown={(e) => { if (e.key === "Enter") void submitGroup(); }} className={`mt-1 ${field}`} placeholder="Ví dụ: Nhóm 1" />
         </label>
         <button disabled={busy || !groupForm?.name.trim()} onClick={submitGroup} className={`mt-5 ${primaryBtn}`}>
-          {busy ? "Đang lưu..." : groupForm?.mode === "rename" ? "Lưu tên nhóm" : "Tạo nhóm"}
+          {busy ? "Đang lưu..." : groupForm?.mode === "rename" ? "Lưu tên nhóm" : "Tạo nhóm và tiếp tục"}
         </button>
       </Sheet>
 
-      <Sheet open={!!memberForm} title={memberForm?.id ? "Đổi tên thành viên" : "Thêm thành viên"} onClose={() => setMemberForm(null)}>
-        {/* Chỉ khi đang thêm mới: danh sách tài khoản đã đăng nhập. Sheet không
-            tự đóng sau mỗi lần chọn, để thêm liền nhiều người. */}
+      <Sheet open={!!memberForm}
+        title={memberForm?.id ? "Đổi tên thành viên" : memberForm?.step2 ? "Bước 2 · Thêm thành viên" : "Thêm thành viên"}
+        onClose={() => setMemberForm(null)}>
+        {memberForm?.step2 && (
+          <p className="mb-4 rounded-2xl bg-indigo-50 px-3 py-3 text-sm text-indigo-800">
+            Đã tạo nhóm <b>{currentGroup?.name}</b>. Thêm thành viên cho nhóm, hoặc đóng để làm sau.
+          </p>
+        )}
+        {/* Chỉ khi đang thêm mới: chọn tài khoản của học sinh. Chọn xong vẫn
+            phải nhập tên học sinh, vì tên tài khoản (thường là tên phụ huynh)
+            không phải tên muốn thấy trong nhóm. */}
         {!memberForm?.id && (
-          <div className="mb-5">
-            <p className="mb-2 text-sm font-bold">Tài khoản đã đăng nhập</p>
-            {profilesError ? (
-              <p className="rounded-2xl bg-amber-50 px-3 py-3 text-sm text-amber-800">
-                Chưa đọc được danh sách tài khoản. Hãy chạy supabase-profiles.sql trong Supabase → SQL Editor.
-                <span className="mt-1 block break-words text-xs text-amber-700">{profilesError}</span>
-              </p>
-            ) : availableProfiles.length === 0 ? (
-              <p className="rounded-2xl bg-slate-50 px-3 py-3 text-sm text-slate-500">
-                {profiles.length === 0 ? "Chưa có tài khoản nào đăng ký." : "Mọi tài khoản đã có trong nhóm này."}
-              </p>
-            ) : (
-              <div className="space-y-1">
-                {availableProfiles.map((prof) => (
-                  <button key={prof.id} disabled={busy} onClick={() => void addMemberFromAccount(prof)}
-                    className="flex min-h-[56px] w-full items-center gap-3 rounded-2xl px-2 py-2 text-left transition hover:bg-slate-100 disabled:opacity-50">
-                    {prof.avatar_url ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={prof.avatar_url} alt="" className="h-10 w-10 shrink-0 rounded-2xl object-cover" />
-                    ) : (
-                      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-indigo-50 text-base font-extrabold text-indigo-700">
-                        {profileName(prof).charAt(0).toUpperCase()}
-                      </span>
-                    )}
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate font-bold">{profileName(prof)}</span>
-                      <span className="block truncate text-xs text-slate-500">{prof.email}</span>
-                    </span>
-                    <Plus size={18} className="shrink-0 text-indigo-600" />
-                  </button>
-                ))}
+          memberForm?.account ? (
+            <div className="mb-5">
+              <p className="mb-2 text-sm font-bold">Tài khoản của học sinh</p>
+              <div className="flex items-center gap-3 rounded-2xl bg-indigo-50 px-3 py-2">
+                {memberForm.account.avatar_url ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={memberForm.account.avatar_url} alt="" className="h-10 w-10 shrink-0 rounded-2xl object-cover" />
+                ) : (
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-white text-base font-extrabold text-indigo-700">
+                    {profileName(memberForm.account).charAt(0).toUpperCase()}
+                  </span>
+                )}
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-bold text-indigo-900">{profileName(memberForm.account)}</span>
+                  <span className="block truncate text-xs text-indigo-500">{memberForm.account.email}</span>
+                </span>
+                <button onClick={() => setMemberForm((f) => (f ? { ...f, account: undefined } : f))}
+                  className="shrink-0 rounded-xl px-3 py-2 text-sm font-bold text-indigo-700 transition hover:bg-white">
+                  Đổi
+                </button>
               </div>
-            )}
-            <div className="mt-4 flex items-center gap-3 text-[11px] font-bold uppercase tracking-wider text-slate-400">
-              <span className="h-px flex-1 bg-slate-200" />hoặc nhập tên<span className="h-px flex-1 bg-slate-200" />
             </div>
-          </div>
+          ) : (
+            <div className="mb-5">
+              <p className="mb-2 text-sm font-bold">Tài khoản đã đăng nhập</p>
+              {profilesError && (
+                <p className="mb-2 rounded-2xl bg-amber-50 px-3 py-3 text-sm text-amber-800">
+                  Chưa đọc được danh sách tài khoản. Hãy chạy supabase-profiles.sql trong Supabase → SQL Editor.
+                  <span className="mt-1 block break-words text-xs text-amber-700">{profilesError}</span>
+                </p>
+              )}
+              {accountOptions.length === 0 ? (
+                <p className="rounded-2xl bg-slate-50 px-3 py-3 text-sm text-slate-500">
+                  Mọi tài khoản đã có trong nhóm này.
+                </p>
+              ) : (
+                <div className="space-y-1">
+                  {accountOptions.map((prof) => (
+                    <button key={prof.id} onClick={() => setMemberForm((f) => (f ? { ...f, account: prof } : f))}
+                      className="flex min-h-[56px] w-full items-center gap-3 rounded-2xl px-2 py-2 text-left transition hover:bg-slate-100">
+                      {prof.avatar_url ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={prof.avatar_url} alt="" className="h-10 w-10 shrink-0 rounded-2xl object-cover" />
+                      ) : (
+                        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-indigo-50 text-base font-extrabold text-indigo-700">
+                          {profileName(prof).charAt(0).toUpperCase()}
+                        </span>
+                      )}
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-2">
+                          <span className="min-w-0 truncate font-bold">{profileName(prof)}</span>
+                          {prof.id === userId && (
+                            <span className="shrink-0 rounded-full bg-indigo-100 px-2 py-0.5 text-[11px] font-bold text-indigo-700">Bạn</span>
+                          )}
+                        </span>
+                        <span className="block truncate text-xs text-slate-500">{prof.email}</span>
+                      </span>
+                      <ChevronRight size={18} className="shrink-0 text-slate-400" />
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div className="mt-4 flex items-center gap-3 text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                <span className="h-px flex-1 bg-slate-200" />hoặc bỏ qua<span className="h-px flex-1 bg-slate-200" />
+              </div>
+            </div>
+          )
         )}
         <label className="block">
-          <span className="text-sm font-bold">Tên thành viên</span>
-          <input autoFocus={!!memberForm?.id} value={memberForm?.name ?? ""} onChange={(e) => setMemberForm((f) => (f ? { ...f, name: e.target.value } : f))}
-            onKeyDown={(e) => { if (e.key === "Enter") void submitMember(); }} className={`mt-1 ${field}`} placeholder="Nhập tên" />
+          <span className="text-sm font-bold">Tên học sinh</span>
+          <input autoFocus={!!memberForm?.id || !!memberForm?.account} value={memberForm?.name ?? ""}
+            onChange={(e) => setMemberForm((f) => (f ? { ...f, name: e.target.value } : f))}
+            onKeyDown={(e) => { if (e.key === "Enter") void submitMember(); }} className={`mt-1 ${field}`}
+            placeholder="Nhập tên học sinh" />
         </label>
         <button disabled={busy || !memberForm?.name.trim()} onClick={submitMember} className={`mt-5 ${primaryBtn}`}>
           {busy ? "Đang lưu..." : memberForm?.id ? "Lưu tên" : "Thêm thành viên"}
