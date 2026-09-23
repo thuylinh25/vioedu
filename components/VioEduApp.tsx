@@ -66,6 +66,15 @@ const TAB_TITLE: Record<Tab, string> = { home: "Lịch học", people: "Học si
 const DURATIONS = [20, 30, 45, 60, 90];
 /** Thời điểm bắt đầu của một buổi, để so với hiện tại. */
 const startsAt = (s: { date: string; time: string }) => new Date(`${s.date}T${s.time}`).getTime();
+/** Tên học sinh của một tài khoản khi hồ sơ trong nhóm không còn: tên đã đặt,
+ *  nếu không thì phần trước @ của email. */
+function accountStudentName(p: Profile): string {
+  const full = (p.full_name ?? "").trim();
+  if (full) return full;
+  const email = (p.email ?? "").trim();
+  return email ? email.split("@")[0] : "Học sinh";
+}
+
 /** Chữ viết tắt cho avatar: hai từ cuối của tên, vì tên tiếng Việt để họ trước
  *  và "Trần Thanh Phong" được gọi là "Thanh Phong" → TP. Tên một từ thì một chữ. */
 function initials(name: string): string {
@@ -224,9 +233,19 @@ export default function VioEduApp() {
   // liệu chưa có cột user_id thì tên là căn cứ duy nhất để tránh thêm trùng.
   const takenUserIds = new Set(members.map((m) => m.user_id).filter(Boolean));
   const takenNames = new Set(members.map((m) => m.name.trim().toLowerCase()));
-  // Mọi học sinh đã có ở đâu đó và chưa thuộc nhóm đang mở, kể cả người chưa
-  // gắn tài khoản: loại họ ra là chặn luôn đường thêm vào nhóm khác.
-  const studentOptions = knownStudents.filter(
+  // Mọi học sinh từng biết đến: các hàng trong nhóm (kể cả người chưa gắn tài
+  // khoản) cộng với mọi tài khoản đã đăng nhập. Nhờ vế thứ hai, xóa một nhóm
+  // không làm ai biến mất khỏi danh sách.
+  const allStudents = (() => {
+    const byKey = new Map<string, Student>();
+    for (const st of knownStudents) byKey.set(st.user_id ?? st.name.trim().toLowerCase(), st);
+    for (const prof of profiles) {
+      if (byKey.has(prof.id)) continue;
+      byKey.set(prof.id, { name: studentNames[prof.id]?.trim() || accountStudentName(prof), user_id: prof.id });
+    }
+    return [...byKey.values()];
+  })();
+  const studentOptions = allStudents.filter(
     (st) => !takenNames.has(st.name.trim().toLowerCase()) && !(st.user_id && takenUserIds.has(st.user_id)),
   );
 
@@ -565,6 +584,10 @@ export default function VioEduApp() {
     // Lỗi thì giữ nguyên dữ liệu đã nhập và không đánh dấu onboarding xong,
     // để người dùng thử lại ngay tại chỗ.
     if (error) { setOnboardError(error.message); return; }
+    // Ghi tên vào chính hồ sơ tài khoản: hàng trong nhóm có thể bị xóa cùng
+    // nhóm, còn tài khoản thì không, nên tên vẫn còn để thêm lại sau này.
+    await supabase.from("profiles").update({ full_name: name }).eq("id", userId);
+    void loadProfiles();
     setGroupStudentNames((n) => ({ ...n, [gid]: [...(n[gid] ?? []), name] }));
     setOnboardDone(true);
     await loadGroups();
@@ -1538,7 +1561,14 @@ export default function VioEduApp() {
                     <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-indigo-50 text-base font-extrabold text-indigo-700">
                       {initials(st.name)}
                     </span>
-                    <span className="min-w-0 flex-1 truncate font-bold">{st.name}</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-bold">{st.name}</span>
+                      {/* Tài khoản chưa từng đặt tên học sinh: tên đang hiện là suy ra
+                          từ email, nên nói rõ để còn đặt lại cho đúng. */}
+                      {st.user_id && !studentNames[st.user_id] && (
+                        <span className="block text-xs text-slate-400">chưa đặt tên học sinh</span>
+                      )}
+                    </span>
                     <span className="shrink-0 px-2 text-sm font-bold text-indigo-600">
                       {linkingId === (st.user_id ?? st.name) ? "Đang thêm..." : "Thêm"}
                     </span>
