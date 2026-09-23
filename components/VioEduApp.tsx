@@ -56,14 +56,6 @@ function friendlyAuthError(raw: string): string {
   return "Không thể xử lý yêu cầu lúc này. Vui lòng thử lại.";
 }
 
-/** Tên hiển thị của một tài khoản: tên thật, nếu không có thì phần trước @ của email. */
-function profileName(p: Profile): string {
-  const full = (p.full_name ?? "").trim();
-  if (full) return full;
-  const email = (p.email ?? "").trim();
-  return email ? email.split("@")[0] : "Học sinh";
-}
-
 const TABS: { id: Tab; icon: typeof Home; label: string }[] = [
   { id: "home", icon: Home, label: "Lịch" },
   { id: "people", icon: UsersRound, label: "Học sinh" },
@@ -194,7 +186,7 @@ export default function VioEduApp() {
   const [moveForm, setMoveForm] = useState<{ member: Member; targetId: string } | null>(null);
   const [groupDelete, setGroupDelete] = useState<{ group: Group; targetId: string } | null>(null);
   const [groupForm, setGroupForm] = useState<{ mode: "create" | "rename"; id?: string; name: string; fromOnboarding?: boolean } | null>(null);
-  const [memberForm, setMemberForm] = useState<{ id: string | null; name: string; step2?: boolean; account?: Profile } | null>(null);
+  const [memberForm, setMemberForm] = useState<{ id: string | null; name: string; step2?: boolean } | null>(null);
   const [scheduleForm, setScheduleForm] = useState<{ id: number | null; memberId: string; time: string; duration: number } | null>(null);
 
   /** Guards against a slow response for group A landing after the user switched to B. */
@@ -215,25 +207,11 @@ export default function VioEduApp() {
   // liệu chưa có cột user_id thì tên là căn cứ duy nhất để tránh thêm trùng.
   const takenUserIds = new Set(members.map((m) => m.user_id).filter(Boolean));
   const takenNames = new Set(members.map((m) => m.name.trim().toLowerCase()));
-  const availableProfiles = profiles.filter(
-    (p) => !takenUserIds.has(p.id) && !takenNames.has(profileName(p).toLowerCase()),
-  );
-  // Tài khoản đang đăng nhập dựng từ phiên, không phụ thuộc bảng profiles, nên
-  // "thêm chính mình" vẫn chạy được khi chưa chạy supabase-profiles.sql.
-  const selfProfile: Profile = { id: userId, email: userEmail || null, full_name: userName || null, avatar_url: userAvatar || null };
-  const selfIsMember = takenUserIds.has(userId) || takenNames.has(profileName(selfProfile).toLowerCase());
-  const otherProfiles = availableProfiles.filter((p) => p.id !== userId);
   // Học sinh đã có tài khoản và chưa thuộc nhóm đang mở. Lọc theo user_id là
   // chính; lọc thêm theo tên để nhóm không có hai hàng cùng tên.
   const studentOptions = knownStudents.filter(
     (st) => st.user_id && !takenUserIds.has(st.user_id) && !takenNames.has(st.name.trim().toLowerCase()),
   );
-  // Một tài khoản chỉ đại diện một học sinh, nên tài khoản đã có hồ sơ không
-  // được đem đi tạo hồ sơ thứ hai — nó nằm ở danh sách bên trên.
-  const accountOptions = [
-    ...(selfIsMember || studentNames[userId] ? [] : [profiles.find((p) => p.id === userId) ?? selfProfile]),
-    ...otherProfiles.filter((p) => !studentNames[p.id]),
-  ];
 
   const mapSchedule = (r: ScheduleRow): Session => ({
     id: r.id,
@@ -587,18 +565,6 @@ export default function VioEduApp() {
       setMembers((v) => v.map((m) => (m.id === editingId ? { ...m, name } : m)));
       setSessions((v) => v.map((s) => (s.memberId === editingId ? { ...s, memberName: name } : s)));
       toast("Đã đổi tên học sinh");
-    } else {
-      // Tên lưu vào nhóm là tên học sinh do người dùng nhập, không phải tên tài
-      // khoản. user_id chỉ gửi khi cơ sở dữ liệu đã có cột đó.
-      const row: Record<string, unknown> = { group_id: groupId, name };
-      if (memberForm.account && memberCols.current === MEMBER_COLS) row.user_id = memberForm.account.id;
-      const { data, error } = await supabase.from("group_members").insert(row).select(memberCols.current).single();
-      setBusy(false);
-      if (error) { toast(error.message, "err"); return; }
-      setMembers((v) => [...v, data as unknown as Member]);
-      setMemberCounts((c) => ({ ...c, [groupId]: (c[groupId] ?? 0) + 1 }));
-      if (memberForm.account) setStudentNames((n) => ({ ...n, [memberForm.account!.id]: name }));
-      toast(`Đã thêm ${name}`);
     }
     setMemberForm(null);
   };
@@ -619,6 +585,8 @@ export default function VioEduApp() {
     setMembers((v) => [...v, data as unknown as Member]);
     setMemberCounts((c) => ({ ...c, [groupId]: (c[groupId] ?? 0) + 1 }));
     setGroupStudentNames((n) => ({ ...n, [groupId]: [...(n[groupId] ?? []), st.name] }));
+    // Chọn xong là xong: đóng luôn để thấy học sinh vừa thêm trong danh sách.
+    setMemberForm(null);
     toast(`Đã thêm ${st.name} vào nhóm`);
   };
 
@@ -936,7 +904,7 @@ export default function VioEduApp() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-100 via-slate-50 to-indigo-50">
-      <div className="relative mx-auto flex min-h-screen w-full max-w-md flex-col bg-white shadow-xl sm:my-6 sm:min-h-[calc(100vh-3rem)] sm:rounded-[34px]">
+      <div className="relative mx-auto flex h-dvh w-full max-w-md flex-col overflow-hidden bg-white shadow-xl sm:my-6 sm:h-[calc(100dvh-3rem)] sm:rounded-[34px]">
         {!online && (
           <div className="flex items-center justify-center gap-2 bg-amber-400 p-2 text-xs font-bold text-amber-950 sm:rounded-t-[34px]">
             <WifiOff size={14} />Đang ngoại tuyến
@@ -992,7 +960,7 @@ export default function VioEduApp() {
           )}
         </header>
 
-        <main className="-mt-3 flex-1 rounded-t-[28px] bg-slate-50 px-4 pt-5" style={{ paddingBottom: "calc(7rem + env(safe-area-inset-bottom, 0px))" }}>
+        <main className="-mt-3 min-h-0 flex-1 overflow-y-auto rounded-t-[28px] bg-slate-50 px-4 pt-5 pb-6">
           {loadError && (
             <div className="mb-4 flex items-center justify-between gap-3 rounded-2xl bg-red-50 p-3 text-sm text-red-700" role="alert">
               <span className="min-w-0">{loadError}</span>
@@ -1364,7 +1332,7 @@ export default function VioEduApp() {
         </main>
 
         {groups.length > 0 && (
-          <nav className="sticky bottom-0 z-30 flex w-full justify-around border-t border-slate-200 bg-white/95 backdrop-blur sm:rounded-b-[34px]"
+          <nav className="z-30 flex w-full shrink-0 justify-around border-t border-slate-200 bg-white/95 backdrop-blur sm:rounded-b-[34px]"
             style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
             {TABS.map(({ id, icon: Icon, label }) => (
               <button key={id} onClick={() => setTab(id)} aria-current={tab === id ? "page" : undefined}
@@ -1435,65 +1403,53 @@ export default function VioEduApp() {
             Đã tạo nhóm <b>{currentGroup?.name}</b>. Thêm học sinh cho nhóm, hoặc đóng để làm sau.
           </p>
         )}
-        {/* Danh sách chỉ hiện TÊN HỌC SINH. Thông tin tài khoản là việc của màn
-            chi tiết học sinh, không phải của ô thêm nhanh này. */}
-        {!memberForm?.id && studentOptions.length > 0 && (
-          <div className="mb-5">
+        {/* Thêm học sinh chỉ còn một cách: chọn từ những người đã đăng nhập và
+            đã đặt tên học sinh. Không còn đường tạo hồ sơ bằng tay. */}
+        {memberForm?.id ? (
+          <>
+            <label className="block">
+              <span className="text-sm font-bold">Tên học sinh</span>
+              <input autoFocus value={memberForm.name}
+                onChange={(e) => setMemberForm((f) => (f ? { ...f, name: e.target.value } : f))}
+                onKeyDown={(e) => { if (e.key === "Enter") void submitMember(); }} className={`mt-1 ${field}`}
+                placeholder="Nhập tên học sinh" />
+            </label>
+            <button disabled={busy || !memberForm.name.trim()} onClick={submitMember} className={`mt-5 ${primaryBtn}`}>
+              {busy ? "Đang lưu..." : "Lưu tên"}
+            </button>
+          </>
+        ) : (
+          <>
             <p className="text-sm font-bold">Học sinh đã có tài khoản</p>
             <p className="mb-2 mt-0.5 text-xs text-slate-500">Chọn học sinh để liên kết với nhóm này</p>
-            <div className="space-y-1">
-              {studentOptions.map((st) => (
-                <button key={st.user_id ?? st.name} disabled={!!linkingId} onClick={() => void addKnownStudent(st)}
-                  className="flex min-h-[56px] w-full items-center gap-3 rounded-2xl px-2 py-2 text-left transition hover:bg-slate-100 disabled:opacity-50">
-                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-indigo-50 text-base font-extrabold text-indigo-700">
-                    {st.name.charAt(0).toUpperCase()}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate font-bold">{st.name}</span>
-                  <span className="shrink-0 px-2 text-sm font-bold text-indigo-600">
-                    {linkingId === st.user_id ? "Đang thêm..." : "Thêm"}
-                  </span>
-                </button>
-              ))}
-            </div>
-            <div className="mt-4 flex items-center gap-3 text-[11px] font-bold uppercase tracking-wider text-slate-400">
-              <span className="h-px flex-1 bg-slate-200" />hoặc thêm học sinh mới<span className="h-px flex-1 bg-slate-200" />
-            </div>
-          </div>
+            {profilesError && (
+              <p className="mb-2 rounded-2xl bg-amber-50 px-3 py-3 text-sm text-amber-800">
+                Chưa đọc được danh sách tài khoản. Hãy chạy supabase-profiles.sql trong Supabase → SQL Editor.
+                <span className="mt-1 block break-words text-xs text-amber-700">{profilesError}</span>
+              </p>
+            )}
+            {studentOptions.length === 0 ? (
+              <p className="rounded-2xl bg-slate-50 px-3 py-4 text-sm text-slate-500">
+                Chưa có học sinh nào để thêm. Học sinh cần tự đăng nhập và đặt tên của mình, sau đó sẽ hiện ở đây.
+              </p>
+            ) : (
+              <div className="space-y-1">
+                {studentOptions.map((st) => (
+                  <button key={st.user_id ?? st.name} disabled={!!linkingId} onClick={() => void addKnownStudent(st)}
+                    className="flex min-h-[56px] w-full items-center gap-3 rounded-2xl px-2 py-2 text-left transition hover:bg-slate-100 disabled:opacity-50">
+                    <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-indigo-50 text-base font-extrabold text-indigo-700">
+                      {st.name.charAt(0).toUpperCase()}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate font-bold">{st.name}</span>
+                    <span className="shrink-0 px-2 text-sm font-bold text-indigo-600">
+                      {linkingId === st.user_id ? "Đang thêm..." : "Thêm"}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
         )}
-        <label className="block">
-          <span className="text-sm font-bold">Tên học sinh</span>
-          <input autoFocus={!!memberForm?.id || !!memberForm?.account} value={memberForm?.name ?? ""}
-            onChange={(e) => setMemberForm((f) => (f ? { ...f, name: e.target.value } : f))}
-            onKeyDown={(e) => { if (e.key === "Enter") void submitMember(); }} className={`mt-1 ${field}`}
-            placeholder="Nhập tên học sinh" />
-        </label>
-        {!memberForm?.id && profilesError && (
-          <p className="mt-4 rounded-2xl bg-amber-50 px-3 py-3 text-sm text-amber-800">
-            Chưa đọc được danh sách tài khoản. Hãy chạy supabase-profiles.sql trong Supabase → SQL Editor.
-            <span className="mt-1 block break-words text-xs text-amber-700">{profilesError}</span>
-          </p>
-        )}
-        {!memberForm?.id && accountOptions.length > 0 && (
-          <label className="mt-4 block">
-            <span className="text-sm font-bold">Tài khoản đăng nhập</span>
-            <span className="mb-1 mt-0.5 block text-xs text-slate-500">Không bắt buộc. Chọn tài khoản nếu học sinh đã có tài khoản đăng nhập.</span>
-            <select value={memberForm?.account?.id ?? ""} className={field}
-              onChange={(e) => {
-                const picked = accountOptions.find((x) => x.id === e.target.value);
-                setMemberForm((f) => (f ? { ...f, account: picked, name: f.name.trim() || (picked ? studentNames[picked.id] ?? "" : "") } : f));
-              }}>
-              <option value="">Không gắn tài khoản</option>
-              {accountOptions.map((prof) => (
-                <option key={prof.id} value={prof.id}>
-                  {prof.id === userId ? `Tôi · ${prof.email ?? ""}` : prof.email ?? profileName(prof)}
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-        <button disabled={busy || !memberForm?.name.trim()} onClick={submitMember} className={`mt-5 ${primaryBtn}`}>
-          {busy ? "Đang lưu..." : memberForm?.id ? "Lưu tên" : "Thêm học sinh"}
-        </button>
       </Sheet>
 
       <Sheet open={!!scheduleForm} title={scheduleForm?.id ? "Sửa lịch học" : "Thêm lịch học"} onClose={() => setScheduleForm(null)}>
