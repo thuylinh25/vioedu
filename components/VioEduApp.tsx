@@ -169,6 +169,9 @@ export default function VioEduApp() {
   const [studentNames, setStudentNames] = useState<Record<string, string>>({});
   /** Mọi học sinh đã có trong bất kỳ nhóm nào, không trùng tên. */
   const [knownStudents, setKnownStudents] = useState<Student[]>([]);
+  /** Hồ sơ học sinh đọc từ bảng students, nếu migration đã chạy. Đây là bản ghi
+   *  bền: nó sống độc lập với việc em đó đang thuộc nhóm nào. */
+  const [tableStudents, setTableStudents] = useState<Student[]>([]);
   /** group_id → tên các học sinh trong nhóm, dựng từ chính lần quét của loadGroups. */
   const [groupStudentNames, setGroupStudentNames] = useState<Record<string, string[]>>({});
   const [countsFailed, setCountsFailed] = useState(false);
@@ -239,6 +242,8 @@ export default function VioEduApp() {
   // không làm ai biến mất khỏi danh sách.
   const allStudents = (() => {
     const byKey = new Map<string, Student>();
+    // Bảng students trước: nó giữ cả những em không còn ở nhóm nào.
+    for (const st of tableStudents) byKey.set(st.user_id ?? st.name.trim().toLowerCase(), st);
     for (const st of knownStudents) byKey.set(st.user_id ?? st.name.trim().toLowerCase(), st);
     for (const prof of profiles) {
       if (byKey.has(prof.id)) continue;
@@ -263,6 +268,14 @@ export default function VioEduApp() {
   });
 
   // ---- data loading -------------------------------------------------------
+  const loadStudentsTable = useCallback(async () => {
+    if (!supabase) return;
+    // Bảng có thể chưa tồn tại (chưa chạy supabase-students.sql); khi đó vẫn
+    // dựng danh sách theo cách cũ, không báo lỗi ra màn hình.
+    const { data, error } = await supabase.from("students").select("name,user_id").order("created_at");
+    setTableStudents(error ? [] : ((data ?? []) as Student[]));
+  }, []);
+
   /** Quét group_members của mọi nhóm: số đếm, tên học sinh theo nhóm, và danh
    *  sách học sinh đã có. Tách riêng để mở ô "Thêm học sinh" là nạp lại được,
    *  không phải chờ đăng nhập lại mới thấy học sinh người khác vừa tạo. */
@@ -301,8 +314,9 @@ export default function VioEduApp() {
     setKnownStudents([...students.values()]);
     setGroupStudentNames(byGroup);
     setLinkedMembers(linked);
+    void loadStudentsTable();
     setIndexReady(true);
-  }, []);
+  }, [loadStudentsTable]);
 
   const loadGroups = useCallback(async () => {
     if (!supabase) return;
@@ -522,7 +536,7 @@ export default function VioEduApp() {
       body: count > 0
         ? `${count} học sinh sẽ rời khỏi nhóm này và lịch học của họ trong nhóm sẽ bị xóa. Hồ sơ và tên của các em được giữ lại, nên thêm vào nhóm khác lúc nào cũng được. Không thể hoàn tác.`
         : "Nhóm này không còn học sinh nào. Lịch học của nhóm sẽ bị xóa. Không thể hoàn tác.",
-      confirmLabel: count > 0 ? "Xóa nhóm và hồ sơ" : "Xóa nhóm",
+      confirmLabel: count > 0 ? "Xóa nhóm, giữ hồ sơ" : "Xóa nhóm",
       onConfirm: async () => {
         if (!supabase) return;
         setConfirmBusy(true);
