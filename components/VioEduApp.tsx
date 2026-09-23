@@ -110,6 +110,8 @@ export default function VioEduApp() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [authError, setAuthError] = useState("");
+  /** Nguyên văn lỗi từ Supabase, hiện kèm khi câu tiếng Việt không nói được nguyên nhân. */
+  const [authDetail, setAuthDetail] = useState("");
   const [authBusy, setAuthBusy] = useState(false);
   const [oauthBusy, setOauthBusy] = useState<OAuthProvider | null>(null);
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -327,13 +329,19 @@ export default function VioEduApp() {
         return;
       }
     }
-    setAuthBusy(true); setAuthError("");
+    setAuthBusy(true); setAuthError(""); setAuthDetail("");
     const creds = { email: email.trim(), password };
     const { data, error } = authMode === "login"
       ? await supabase.auth.signInWithPassword(creds)
       : await supabase.auth.signUp(creds);
     setAuthBusy(false);
-    if (error) { setAuthError(friendlyAuthError(error.message)); return; }
+    if (error) {
+      setAuthError(friendlyAuthError(error.message));
+      // Không giấu lỗi gốc: một thông báo chung chung khiến sự cố cấu hình máy
+      // chủ trông giống lỗi người dùng nhập sai.
+      setAuthDetail(error.message);
+      return;
+    }
     if (authMode === "signup" && !data.session) {
       setAuthMode("login");
       setAuthError("Đã gửi email xác nhận. Xác nhận xong hãy đăng nhập.");
@@ -341,7 +349,7 @@ export default function VioEduApp() {
   };
   const signInOAuth = async (provider: OAuthProvider) => {
     if (!supabase) return;
-    setAuthError("");
+    setAuthError(""); setAuthDetail("");
     setOauthBusy(provider);
     // Only the provider name leaves the client; the app secret lives in
     // Supabase and is never shipped to the browser.
@@ -719,7 +727,12 @@ export default function VioEduApp() {
               </div>
             )}
 
-            {authError && <p className="rounded-2xl bg-red-50 p-3 text-sm text-red-700" role="alert">{authError}</p>}
+            {authError && (
+              <p className="rounded-2xl bg-red-50 p-3 text-sm text-red-700" role="alert">
+                {authError}
+                {authDetail && <span className="mt-1 block break-words text-xs text-red-500">{authDetail}</span>}
+              </p>
+            )}
             <button disabled={authBusy} className={primaryBtn}>
               {authBusy ? "Đang xử lý..." : authMode === "login" ? "Đăng nhập" : "Đăng ký"}
             </button>
@@ -740,7 +753,7 @@ export default function VioEduApp() {
           </div>
           <p className="mt-5 text-center text-sm text-slate-500">
             {authMode === "login" ? "Chưa có tài khoản? " : "Đã có tài khoản? "}
-            <button type="button" onClick={() => { setAuthMode(authMode === "login" ? "signup" : "login"); setAuthError(""); setConfirmPassword(""); setShowPassword(false); setShowConfirm(false); }} className="font-bold text-indigo-600">
+            <button type="button" onClick={() => { setAuthMode(authMode === "login" ? "signup" : "login"); setAuthError(""); setAuthDetail(""); setConfirmPassword(""); setShowPassword(false); setShowConfirm(false); }} className="font-bold text-indigo-600">
               {authMode === "login" ? "Đăng ký" : "Đăng nhập"}
             </button>
           </p>

@@ -40,7 +40,13 @@ begin
     full_name  = excluded.full_name,
     avatar_url = excluded.avatar_url;
   return new;
-end $$;
+exception when others then
+  -- Trigger này chạy TRONG giao dịch tạo tài khoản. Nếu nó báo lỗi thì cả việc
+  -- đăng ký hỏng theo ("Database error saving new user"). Hồ sơ chỉ là bản sao
+  -- tiện dụng, không đáng để chặn người dùng tạo tài khoản, nên nuốt lỗi ở đây
+  -- và để backfill bên dưới bù lại sau.
+  return new;
+end $;
 
 drop trigger if exists on_auth_user_saved on auth.users;
 create trigger on_auth_user_saved
