@@ -3,7 +3,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExtern
 import type { Session as AuthSession } from "@supabase/supabase-js";
 import {
   CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, Clock3, ExternalLink,
-  Eye, EyeOff, Home, LogOut, Pencil, Plus, Settings, Trash2, User, UsersRound, WifiOff,
+  Eye, EyeOff, Home, LogOut, Pencil, Plus, Settings, Trash2, User, UsersRound, WifiOff, X,
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { supabase } from "../lib-supabase-client";
@@ -64,6 +64,8 @@ const TABS: { id: Tab; icon: typeof Home; label: string }[] = [
 ];
 const TAB_TITLE: Record<Tab, string> = { home: "Lịch học", people: "Học sinh", stats: "Tiến độ", settings: "Cài đặt" };
 const DURATIONS = [20, 30, 45, 60, 90];
+/** Thời điểm bắt đầu của một buổi, để so với hiện tại. */
+const startsAt = (s: { date: string; time: string }) => new Date(`${s.date}T${s.time}`).getTime();
 /** Chữ viết tắt cho avatar: hai từ cuối của tên, vì tên tiếng Việt để họ trước
  *  và "Trần Thanh Phong" được gọi là "Thanh Phong" → TP. Tên một từ thì một chữ. */
 function initials(name: string): string {
@@ -186,6 +188,8 @@ export default function VioEduApp() {
   /** user_id của học sinh đang được liên kết, để chỉ khoá đúng hàng đó. */
   const [linkingId, setLinkingId] = useState("");
   const [studentDetail, setStudentDetail] = useState<Member | null>(null);
+  /** id của học sinh đang lọc trên màn Lịch; rỗng là xem cả nhóm. */
+  const [studentFilter, setStudentFilter] = useState("");
   const [moveForm, setMoveForm] = useState<{ member: Member; targetId: string } | null>(null);
   const [groupDelete, setGroupDelete] = useState<{ group: Group; targetId: string } | null>(null);
   const [groupForm, setGroupForm] = useState<{ mode: "create" | "rename"; id?: string; name: string; fromOnboarding?: boolean } | null>(null);
@@ -310,6 +314,7 @@ export default function VioEduApp() {
 
   const loadGroupData = useCallback(async (gid: string) => {
     if (!supabase) return;
+    setStudentFilter("");
     if (!gid) { setMembers([]); setSessions([]); return; }
     const token = ++loadToken.current;
     setDataLoading(true);
@@ -633,19 +638,20 @@ export default function VioEduApp() {
     setStudentDetail(selfMember);
   };
 
-  /** Gắn hồ sơ học sinh đang xem với tài khoản đang đăng nhập. Chỉ mở ra khi
-   *  hàng đó chưa gắn ai và tài khoản này chưa có hồ sơ nào, nên không thể
-   *  cướp hồ sơ của người khác hay tạo hồ sơ thứ hai. */
-  const claimStudent = async (m: Member) => {
-    if (!supabase || !userId || busy) return;
+  /** Gắn hồ sơ học sinh với một tài khoản, hoặc bỏ gắn khi truyền chuỗi rỗng.
+   *  Gắn được cho bất kỳ ai chứ không riêng người đang đăng nhập, vì người lập
+   *  nhóm mới là người biết em nào dùng tài khoản nào. */
+  const linkStudentAccount = async (m: Member, accountId: string) => {
+    if (!supabase || busy) return;
     setBusy(true);
-    const { error } = await supabase.from("group_members").update({ user_id: userId }).eq("id", m.id);
+    const next = accountId || null;
+    const { error } = await supabase.from("group_members").update({ user_id: next }).eq("id", m.id);
     setBusy(false);
     if (error) { toast(error.message, "err"); return; }
-    setMembers((v) => v.map((x) => (x.id === m.id ? { ...x, user_id: userId } : x)));
-    setStudentDetail(null);
+    setMembers((v) => v.map((x) => (x.id === m.id ? { ...x, user_id: next } : x)));
+    setStudentDetail((d) => (d && d.id === m.id ? { ...d, user_id: next } : d));
     await loadMemberIndex();
-    toast(`Đã gắn ${m.name} với tài khoản của bạn`);
+    toast(next ? `Đã gắn tài khoản cho ${m.name}` : `Đã bỏ liên kết tài khoản khỏi ${m.name}`);
   };
 
   const openMove = (m: Member) => {
@@ -772,19 +778,25 @@ export default function VioEduApp() {
   // ---- derived ------------------------------------------------------------
   const week = useMemo(() => weekDays(selectedDate), [selectedDate]);
   const monthRows = useMemo(() => monthWeeks(selectedDate), [selectedDate]);
+  // Màn Lịch là nơi xem toàn bộ lịch; khi đến từ hồ sơ một học sinh thì lọc
+  // theo đúng học sinh đó, kể cả các chấm báo lịch trên dải ngày.
+  const visibleSessions = useMemo(
+    () => (studentFilter ? sessions.filter((s) => s.memberId === studentFilter) : sessions),
+    [sessions, studentFilter],
+  );
   /** dateKey -> how many sessions that day has, and how many are done. */
   const byDate = useMemo(() => {
     const map: Record<string, { total: number; done: number }> = {};
-    for (const s of sessions) {
+    for (const s of visibleSessions) {
       const slot = (map[s.date] ??= { total: 0, done: 0 });
       slot.total += 1;
       if (s.done) slot.done += 1;
     }
     return map;
-  }, [sessions]);
+  }, [visibleSessions]);
   const daily = useMemo(
-    () => sessions.filter((s) => s.date === dateKey(selectedDate)).sort((a, b) => minutesOf(a.time) - minutesOf(b.time)),
-    [sessions, selectedDate],
+    () => visibleSessions.filter((s) => s.date === dateKey(selectedDate)).sort((a, b) => minutesOf(a.time) - minutesOf(b.time)),
+    [visibleSessions, selectedDate],
   );
   const doneCount = sessions.filter((s) => s.done).length;
   const moveDay = (n: number) => { const d = new Date(selectedDate); d.setDate(d.getDate() + n); setSelectedDate(d); };
@@ -1111,6 +1123,19 @@ export default function VioEduApp() {
                     ))}
                   </div>
 
+                  {/* Đến từ hồ sơ một học sinh: cho biết đang lọc theo ai và
+                      cho bỏ lọc, nhóm đang xem giữ nguyên. */}
+                  {studentFilter && (
+                    <div className="mb-3 flex items-center gap-2 rounded-2xl bg-indigo-50 px-3 py-2">
+                      <span className="min-w-0 flex-1 truncate text-sm font-bold text-indigo-800">
+                        {members.find((m) => m.id === studentFilter)?.name ?? "Học sinh"}
+                      </span>
+                      <button onClick={() => setStudentFilter("")} aria-label="Bỏ lọc học sinh"
+                        className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-indigo-600 transition hover:bg-white">
+                        <X size={16} />
+                      </button>
+                    </div>
+                  )}
                   <div className="mb-3 flex items-end justify-between gap-3">
                     <div>
                       <h2 className="font-extrabold">Lịch học</h2>
@@ -1568,6 +1593,13 @@ export default function VioEduApp() {
         {studentDetail && (() => {
           const own = sessions.filter((x) => x.memberId === studentDetail.id);
           const done = own.filter((x) => x.done).length;
+          // "Sắp tới" là buổi chưa đánh dấu hoàn thành và chưa tới giờ. Dữ liệu
+          // chỉ có cờ done, không có hủy hay vắng, nên đây là toàn bộ định nghĩa.
+          const upcoming = own.filter((x) => !x.done && startsAt(x) >= today.getTime()).sort((a, b) => startsAt(a) - startsAt(b));
+          const past = own.filter((x) => x.done || startsAt(x) < today.getTime()).sort((a, b) => startsAt(b) - startsAt(a));
+          // Ưu tiên buổi sắp tới; thiếu thì bù bằng buổi gần đây nhất. Tối đa ba
+          // hàng, để hồ sơ không dài ra theo số buổi học.
+          const shown = [...upcoming, ...past].slice(0, 3);
           const account = studentDetail.user_id ? profiles.find((x) => x.id === studentDetail.user_id) : undefined;
           return (
             <div className="space-y-4">
@@ -1583,14 +1615,29 @@ export default function VioEduApp() {
                 </span>
               </div>
 
+              {linkSupported && (
+                <label className="block">
+                  <span className="text-sm font-bold">Tài khoản đăng nhập</span>
+                  {/* Một tài khoản đại diện một học sinh, nên tài khoản đã gắn cho
+                      em khác không xuất hiện ở đây. */}
+                  <select disabled={busy} value={studentDetail.user_id ?? ""} className={`mt-1 ${field}`}
+                    onChange={(e) => void linkStudentAccount(studentDetail, e.target.value)}>
+                    <option value="">Chưa gắn tài khoản</option>
+                    {profiles
+                      .filter((x) => x.id === studentDetail.user_id || !studentNames[x.id])
+                      .map((x) => <option key={x.id} value={x.id}>{x.email ?? x.id}</option>)}
+                  </select>
+                </label>
+              )}
+
               <div className="grid grid-cols-2 gap-2 text-center">
                 <div className="rounded-2xl bg-white p-3 shadow-sm">
                   <p className="text-2xl font-extrabold text-indigo-700">{done}</p>
                   <p className="text-xs text-slate-500">buổi hoàn thành</p>
                 </div>
                 <div className="rounded-2xl bg-white p-3 shadow-sm">
-                  <p className="text-2xl font-extrabold text-slate-700">{own.length}</p>
-                  <p className="text-xs text-slate-500">buổi đã lên lịch</p>
+                  <p className="text-2xl font-extrabold text-slate-700">{upcoming.length}</p>
+                  <p className="text-xs text-slate-500">buổi sắp tới</p>
                 </div>
               </div>
 
@@ -1599,25 +1646,28 @@ export default function VioEduApp() {
                 {own.length === 0 ? (
                   <p className="rounded-2xl bg-slate-50 px-3 py-3 text-sm text-slate-500">Chưa có buổi học nào trong nhóm này.</p>
                 ) : (
-                  <div className="max-h-56 space-y-1 overflow-y-auto">
-                    {own.map((x) => (
-                      <div key={x.id} className="flex items-center gap-2 rounded-2xl bg-slate-50 px-3 py-2 text-sm">
-                        <Clock3 size={15} className="shrink-0 text-slate-400" />
-                        <span className="min-w-0 flex-1 truncate">{dateLabel(new Date(x.date))} · {fmt12(x.time)}</span>
-                        {x.done && <Check size={16} className="shrink-0 text-emerald-600" />}
-                      </div>
-                    ))}
-                  </div>
+                  <>
+                    {/* Không cuộn riêng ở đây: cả sheet cuộn là đủ, và ba hàng thì không cần. */}
+                    <div className="space-y-1">
+                      {shown.map((x) => (
+                        <div key={x.id} className="flex items-center gap-2 rounded-2xl bg-slate-50 px-3 py-2 text-sm">
+                          <Clock3 size={15} className="shrink-0 text-slate-400" />
+                          <span className="min-w-0 flex-1 truncate">{dateLabel(new Date(x.date))} · {fmt12(x.time)}</span>
+                          {x.done && <Check size={16} className="shrink-0 text-emerald-600" />}
+                        </div>
+                      ))}
+                    </div>
+                    {own.length > shown.length && (
+                      <button onClick={() => { setStudentFilter(studentDetail.id); setStudentDetail(null); setTab("home"); }}
+                        className="mt-2 flex min-h-[44px] w-full items-center justify-center gap-1 text-sm font-bold text-indigo-600 transition hover:text-indigo-700">
+                        Xem tất cả lịch học<ChevronRight size={16} />
+                      </button>
+                    )}
+                  </>
                 )}
               </div>
 
               <div className="space-y-2 border-t border-slate-200 pt-4">
-                {!studentDetail.user_id && selfMembers.length === 0 && linkSupported && (
-                  <button onClick={() => void claimStudent(studentDetail)} disabled={busy}
-                    className="flex min-h-[48px] w-full items-center gap-2 rounded-2xl bg-indigo-50 px-4 font-bold text-indigo-700 transition hover:bg-indigo-100 disabled:opacity-50">
-                    <User size={16} />Đây là tôi
-                  </button>
-                )}
                 <button onClick={() => { setStudentDetail(null); setMemberForm({ id: studentDetail.id, name: studentDetail.name }); }}
                   className="flex min-h-[48px] w-full items-center gap-2 rounded-2xl bg-slate-100 px-4 font-bold text-slate-700 transition hover:bg-slate-200">
                   <Pencil size={16} />Sửa thông tin
