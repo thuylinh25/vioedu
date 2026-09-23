@@ -188,6 +188,8 @@ export default function VioEduApp() {
   const [showAccount, setShowAccount] = useState(false);
   /** Ảnh đại diện có thể hỏng link; khi đó quay về chữ cái đầu. */
   const [avatarBroken, setAvatarBroken] = useState(false);
+  /** user_id của học sinh đang được liên kết, để chỉ khoá đúng hàng đó. */
+  const [linkingId, setLinkingId] = useState("");
   const [studentDetail, setStudentDetail] = useState<Member | null>(null);
   const [moveForm, setMoveForm] = useState<{ member: Member; targetId: string } | null>(null);
   const [groupDelete, setGroupDelete] = useState<{ group: Group; targetId: string } | null>(null);
@@ -221,13 +223,16 @@ export default function VioEduApp() {
   const selfProfile: Profile = { id: userId, email: userEmail || null, full_name: userName || null, avatar_url: userAvatar || null };
   const selfIsMember = takenUserIds.has(userId) || takenNames.has(profileName(selfProfile).toLowerCase());
   const otherProfiles = availableProfiles.filter((p) => p.id !== userId);
-  // Học sinh đã có ở nhóm khác và chưa có trong nhóm đang mở.
+  // Học sinh đã có tài khoản và chưa thuộc nhóm đang mở. Lọc theo user_id là
+  // chính; lọc thêm theo tên để nhóm không có hai hàng cùng tên.
   const studentOptions = knownStudents.filter(
-    (st) => !takenNames.has(st.name.trim().toLowerCase()) && !(st.user_id && takenUserIds.has(st.user_id)),
+    (st) => st.user_id && !takenUserIds.has(st.user_id) && !takenNames.has(st.name.trim().toLowerCase()),
   );
+  // Một tài khoản chỉ đại diện một học sinh, nên tài khoản đã có hồ sơ không
+  // được đem đi tạo hồ sơ thứ hai — nó nằm ở danh sách bên trên.
   const accountOptions = [
-    ...(selfIsMember ? [] : [profiles.find((p) => p.id === userId) ?? selfProfile]),
-    ...otherProfiles,
+    ...(selfIsMember || studentNames[userId] ? [] : [profiles.find((p) => p.id === userId) ?? selfProfile]),
+    ...otherProfiles.filter((p) => !studentNames[p.id]),
   ];
 
   const mapSchedule = (r: ScheduleRow): Session => ({
@@ -598,18 +603,23 @@ export default function VioEduApp() {
     setMemberForm(null);
   };
 
-  /** Học sinh đã có tên ở nhóm khác: thêm thẳng, không hỏi lại tên. */
+  /** Liên kết một học sinh đã có tài khoản vào nhóm đang mở.
+   *  Giữ nguyên tên và user_id của hồ sơ cũ, không hỏi lại tên và không đặt
+   *  danh tính mới: chỉ số hàng thành viên của nhóm này tăng thêm một. */
   const addKnownStudent = async (st: Student) => {
-    if (!supabase || !groupId) return;
-    setBusy(true);
+    if (!supabase || !groupId || !st.user_id || linkingId) return; // linkingId chặn bấm hai lần
+    setLinkingId(st.user_id);
     const row: Record<string, unknown> = { group_id: groupId, name: st.name };
-    if (st.user_id && memberCols.current === MEMBER_COLS) row.user_id = st.user_id;
+    if (memberCols.current === MEMBER_COLS) row.user_id = st.user_id;
     const { data, error } = await supabase.from("group_members").insert(row).select(memberCols.current).single();
-    setBusy(false);
+    setLinkingId("");
+    // Chỉ số liệu trên màn được cập nhật khi máy chủ đã nhận; lỗi thì giữ
+    // nguyên danh sách để bấm lại.
     if (error) { toast(error.message, "err"); return; }
     setMembers((v) => [...v, data as unknown as Member]);
     setMemberCounts((c) => ({ ...c, [groupId]: (c[groupId] ?? 0) + 1 }));
-    toast(`Đã thêm ${st.name}`);
+    setGroupStudentNames((n) => ({ ...n, [groupId]: [...(n[groupId] ?? []), st.name] }));
+    toast(`Đã thêm ${st.name} vào nhóm`);
   };
 
   const openMove = (m: Member) => {
@@ -1429,16 +1439,19 @@ export default function VioEduApp() {
             chi tiết học sinh, không phải của ô thêm nhanh này. */}
         {!memberForm?.id && studentOptions.length > 0 && (
           <div className="mb-5">
-            <p className="mb-2 text-sm font-bold">Học sinh đã có</p>
+            <p className="text-sm font-bold">Học sinh đã có tài khoản</p>
+            <p className="mb-2 mt-0.5 text-xs text-slate-500">Chọn học sinh để liên kết với nhóm này</p>
             <div className="space-y-1">
               {studentOptions.map((st) => (
-                <button key={st.name} disabled={busy} onClick={() => void addKnownStudent(st)}
+                <button key={st.user_id ?? st.name} disabled={!!linkingId} onClick={() => void addKnownStudent(st)}
                   className="flex min-h-[56px] w-full items-center gap-3 rounded-2xl px-2 py-2 text-left transition hover:bg-slate-100 disabled:opacity-50">
                   <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-indigo-50 text-base font-extrabold text-indigo-700">
                     {st.name.charAt(0).toUpperCase()}
                   </span>
                   <span className="min-w-0 flex-1 truncate font-bold">{st.name}</span>
-                  <Plus size={18} className="shrink-0 text-indigo-600" />
+                  <span className="shrink-0 px-2 text-sm font-bold text-indigo-600">
+                    {linkingId === st.user_id ? "Đang thêm..." : "Thêm"}
+                  </span>
                 </button>
               ))}
             </div>
@@ -1463,7 +1476,7 @@ export default function VioEduApp() {
         {!memberForm?.id && accountOptions.length > 0 && (
           <label className="mt-4 block">
             <span className="text-sm font-bold">Tài khoản đăng nhập</span>
-            <span className="mb-1 mt-0.5 block text-xs text-slate-500">Không bắt buộc. Gắn để biết học sinh này đăng nhập bằng tài khoản nào.</span>
+            <span className="mb-1 mt-0.5 block text-xs text-slate-500">Không bắt buộc. Chọn tài khoản nếu học sinh đã có tài khoản đăng nhập.</span>
             <select value={memberForm?.account?.id ?? ""} className={field}
               onChange={(e) => {
                 const picked = accountOptions.find((x) => x.id === e.target.value);
