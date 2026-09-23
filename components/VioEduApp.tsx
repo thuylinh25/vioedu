@@ -14,7 +14,9 @@ import { ConfirmDialog, ConfirmState, EmptyState, RowMenu, Sheet, Skeleton, Toas
 import { FacebookIcon, GoogleIcon } from "./BrandIcons";
 
 type Group = { id: string; name: string; owner_id: string };
-type Member = { id: string; group_id: string; name: string };
+type Member = { id: string; group_id: string; name: string; user_id?: string | null };
+/** Một tài khoản đã đăng nhập, đọc từ bảng public.profiles. */
+type Profile = { id: string; email: string | null; full_name: string | null; avatar_url: string | null };
 type Session = {
   id: number; date: string; memberId: string | null;
   memberName: string; time: string; duration: number; done: boolean;
@@ -42,6 +44,14 @@ function friendlyAuthError(raw: string): string {
   return "Không thể xử lý yêu cầu lúc này. Vui lòng thử lại.";
 }
 
+/** Tên hiển thị của một tài khoản: tên thật, nếu không có thì phần trước @ của email. */
+function profileName(p: Profile): string {
+  const full = (p.full_name ?? "").trim();
+  if (full) return full;
+  const email = (p.email ?? "").trim();
+  return email ? email.split("@")[0] : "Thành viên";
+}
+
 const TABS: { id: Tab; icon: typeof Home; label: string }[] = [
   { id: "home", icon: Home, label: "Lịch" },
   { id: "people", icon: UsersRound, label: "Thành viên" },
@@ -53,6 +63,9 @@ const DURATIONS = [20, 30, 45, 60, 90];
 /** New schedules open at 07:00, so the picker shows AM by default. */
 const DEFAULT_TIME = "07:00";
 const SCHEDULE_COLS = "id,student_name,study_date,start_time,duration,done,member_id,group_members(name)";
+/** user_id chỉ tồn tại sau khi chạy supabase-profiles.sql; trước đó dùng bộ cột cũ. */
+const MEMBER_COLS = "id,group_id,name,user_id";
+const MEMBER_COLS_LEGACY = "id,group_id,name";
 
 const field = "w-full rounded-2xl border border-slate-200 bg-white p-3 text-slate-900 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100";
 const primaryBtn = "min-h-[48px] w-full rounded-2xl bg-indigo-600 px-4 font-bold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50";
@@ -104,6 +117,8 @@ export default function VioEduApp() {
   const [groups, setGroups] = useState<Group[]>([]);
   const [groupId, setGroupId] = useState("");
   const [members, setMembers] = useState<Member[]>([]);
+  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [profilesError, setProfilesError] = useState("");
   const [sessions, setSessions] = useState<Session[]>([]);
   const [memberCounts, setMemberCounts] = useState<Record<string, number>>({});
   const [groupsLoading, setGroupsLoading] = useState(true);
@@ -122,6 +137,7 @@ export default function VioEduApp() {
 
   /** Guards against a slow response for group A landing after the user switched to B. */
   const loadToken = useRef(0);
+  const memberCols = useRef(MEMBER_COLS);
   const loadedUser = useRef<string | null>(null);
 
   const toast = useCallback((text: string, tone: Toast["tone"] = "ok") => {
@@ -132,6 +148,14 @@ export default function VioEduApp() {
   const dismissToast = useCallback((id: number) => setToasts((v) => v.filter((t) => t.id !== id)), []);
 
   const currentGroup = groups.find((g) => g.id === groupId) ?? null;
+
+  // Tài khoản chưa có mặt trong nhóm đang mở. Lọc cả theo tên, vì khi cơ sở dữ
+  // liệu chưa có cột user_id thì tên là căn cứ duy nhất để tránh thêm trùng.
+  const takenUserIds = new Set(members.map((m) => m.user_id).filter(Boolean));
+  const takenNames = new Set(members.map((m) => m.name.trim().toLowerCase()));
+  const availableProfiles = profiles.filter(
+    (p) => !takenUserIds.has(p.id) && !takenNames.has(profileName(p).toLowerCase()),
+  );
 
   const mapSchedule = (r: any): Session => ({
     id: r.id,
@@ -163,6 +187,25 @@ export default function VioEduApp() {
     }
   }, []);
 
+  const loadProfiles = useCallback(async () => {
+    if (!supabase) return;
+    const { data, error } = await supabase.from("profiles").select("id,email,full_name,avatar_url").order("created_at");
+    // Bảng profiles có thể chưa được tạo. Giữ lại lời báo lỗi và hiện nó ngay
+    // trong ô thêm thành viên: một danh sách trống lặng lẽ không cho biết là
+    // chưa chạy SQL hay thật sự chưa có tài khoản nào.
+    setProfilesError(error ? error.message : "");
+    setProfiles(error ? [] : ((data ?? []) as Profile[]));
+  }, []);
+
+  /** Thử bộ cột có user_id trước, lùi về bộ cột cũ nếu cột chưa được thêm. */
+  const fetchMembers = useCallback(async (gid: string) => {
+    const run = () => supabase!.from("group_members").select(memberCols.current).eq("group_id", gid).order("created_at");
+    const first = await run();
+    if (!first.error || memberCols.current === MEMBER_COLS_LEGACY) return first;
+    memberCols.current = MEMBER_COLS_LEGACY;
+    return run();
+  }, []);
+
   const loadGroupData = useCallback(async (gid: string) => {
     if (!supabase) return;
     if (!gid) { setMembers([]); setSessions([]); return; }
@@ -173,16 +216,16 @@ export default function VioEduApp() {
     setMembers([]);
     setSessions([]);
     const [m, s] = await Promise.all([
-      supabase.from("group_members").select("id,group_id,name").eq("group_id", gid).order("created_at"),
+      fetchMembers(gid),
       supabase.from("schedules").select(SCHEDULE_COLS).eq("group_id", gid).order("study_date").order("start_time"),
     ]);
     if (token !== loadToken.current) return; // a newer group won the race
     setDataLoading(false);
     if (m.error || s.error) { setLoadError((m.error ?? s.error)!.message); return; }
     setLoadError("");
-    setMembers((m.data ?? []) as Member[]);
+    setMembers((m.data ?? []) as unknown as Member[]);
     setSessions((s.data ?? []).map(mapSchedule));
-  }, []);
+  }, [fetchMembers]);
 
   useEffect(() => {
     const on = () => setOnline(true), off = () => setOnline(false);
@@ -217,8 +260,8 @@ export default function VioEduApp() {
       // USER_UPDATED fire with the same user and must not re-query.
       if (loadedUser.current === (u?.id ?? null)) return;
       loadedUser.current = u?.id ?? null;
-      if (u) { void loadGroups(); }
-      else { setGroups([]); setGroupId(""); setMembers([]); setSessions([]); setGroupsLoading(false); }
+      if (u) { void loadGroups(); void loadProfiles(); }
+      else { setGroups([]); setGroupId(""); setMembers([]); setSessions([]); setProfiles([]); setProfilesError(""); setGroupsLoading(false); }
     };
     supabase.auth.getSession().then(({ data }) => apply(data.session));
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
@@ -226,7 +269,7 @@ export default function VioEduApp() {
       apply(session);
     });
     return () => subscription.unsubscribe();
-  }, [loadGroups]);
+  }, [loadGroups, loadProfiles]);
 
   useEffect(() => { if (userId) void loadGroupData(groupId); }, [groupId, userId, loadGroupData]);
 
@@ -355,14 +398,31 @@ export default function VioEduApp() {
       setSessions((v) => v.map((s) => (s.memberId === editingId ? { ...s, memberName: name } : s)));
       toast("Đã đổi tên thành viên");
     } else {
-      const { data, error } = await supabase.from("group_members").insert({ group_id: groupId, name }).select("id,group_id,name").single();
+      const { data, error } = await supabase.from("group_members").insert({ group_id: groupId, name }).select(memberCols.current).single();
       setBusy(false);
       if (error) { toast(error.message, "err"); return; }
-      setMembers((v) => [...v, data as Member]);
+      setMembers((v) => [...v, data as unknown as Member]);
       setMemberCounts((c) => ({ ...c, [groupId]: (c[groupId] ?? 0) + 1 }));
       toast(`Đã thêm ${name}`);
     }
     setMemberForm(null);
+  };
+
+  /** Thêm thẳng một tài khoản đã đăng nhập vào nhóm đang mở. */
+  const addMemberFromAccount = async (prof: Profile) => {
+    if (!supabase || !groupId) return;
+    const name = profileName(prof);
+    setBusy(true);
+    // Chỉ gửi user_id khi cơ sở dữ liệu đã có cột đó, để lần thêm này không
+    // hỏng ở những bản chưa chạy supabase-profiles.sql.
+    const row: Record<string, unknown> = { group_id: groupId, name };
+    if (memberCols.current === MEMBER_COLS) row.user_id = prof.id;
+    const { data, error } = await supabase.from("group_members").insert(row).select(memberCols.current).single();
+    setBusy(false);
+    if (error) { toast(error.message, "err"); return; }
+    setMembers((v) => [...v, data as unknown as Member]);
+    setMemberCounts((c) => ({ ...c, [groupId]: (c[groupId] ?? 0) + 1 }));
+    toast(`Đã thêm ${name}`);
   };
 
   const askDeleteMember = (m: Member) => {
@@ -963,11 +1023,10 @@ export default function VioEduApp() {
                   </section>
 
                   <section>
-                    <h2 className="mb-2 px-1 text-xs font-bold uppercase tracking-wider text-slate-400">Nhóm của tôi</h2>
+                    <h2 className="mb-2 px-1 text-xs font-bold uppercase tracking-wider text-slate-400">Nhóm</h2>
                     <div className="space-y-2">
                       {groups.map((g) => {
                         const active = g.id === groupId;
-                        const owned = g.owner_id === userId;
                         return (
                           <div key={g.id}
                             className={`flex items-center gap-2 rounded-3xl p-4 shadow-sm transition ${active ? "bg-indigo-50 ring-1 ring-indigo-200" : "bg-white"}`}>
@@ -981,19 +1040,15 @@ export default function VioEduApp() {
                                 </span>
                               </span>
                             </button>
-                            {owned ? (
-                              <RowMenu
-                                label={`Tùy chọn cho nhóm ${g.name}`}
-                                items={[
-                                  { label: "Đổi tên nhóm", icon: <Pencil size={15} />, onSelect: () => setGroupForm({ mode: "rename", id: g.id, name: g.name }) },
-                                  { label: "Xóa nhóm", icon: <Trash2 size={15} />, danger: true, onSelect: () => askDeleteGroup(g) },
-                                ]}
-                              />
-                            ) : (
-                              // Not the owner: RLS would reject the write anyway, so the
-                              // menu is omitted rather than offered and then failing.
-                              <span className="px-2 text-[11px] font-semibold text-slate-400">Khách</span>
-                            )}
+                            {/* Dữ liệu dùng chung: mọi tài khoản đã đăng nhập đều sửa được
+                                mọi nhóm, nên không còn phân biệt chủ nhóm với khách. */}
+                            <RowMenu
+                              label={`Tùy chọn cho nhóm ${g.name}`}
+                              items={[
+                                { label: "Đổi tên nhóm", icon: <Pencil size={15} />, onSelect: () => setGroupForm({ mode: "rename", id: g.id, name: g.name }) },
+                                { label: "Xóa nhóm", icon: <Trash2 size={15} />, danger: true, onSelect: () => askDeleteGroup(g) },
+                              ]}
+                            />
                           </div>
                         );
                       })}
@@ -1029,17 +1084,34 @@ export default function VioEduApp() {
       {/* --- sheets ---------------------------------------------------- */}
       <Sheet open={showGroupPicker} title="Chọn nhóm" onClose={() => setShowGroupPicker(false)}>
         <div className="space-y-1">
+          {/* Mỗi hàng gồm nút chọn nhóm và hai nút thao tác. Dùng nút hiện sẵn
+              chứ không dùng menu bật ra, vì thân Sheet cuộn được và sẽ cắt mất
+              phần menu tràn ra ngoài. */}
           {groups.map((g) => (
-            <button key={g.id} onClick={() => { setGroupId(g.id); setShowGroupPicker(false); }}
-              className={`flex min-h-[56px] w-full items-center gap-3 rounded-2xl px-3 py-2 text-left transition ${g.id === groupId ? "bg-indigo-50 text-indigo-700" : "hover:bg-slate-100"}`}>
-              <Check size={18} className={`shrink-0 ${g.id === groupId ? "" : "invisible"}`} />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate font-bold">{g.name}</span>
-                <span className={`block text-xs ${g.id === groupId ? "text-indigo-500" : "text-slate-500"}`}>
-                  {memberCounts[g.id] ?? 0} thành viên
+            <div key={g.id}
+              className={`flex min-h-[56px] items-center gap-1 rounded-2xl pr-1 transition ${g.id === groupId ? "bg-indigo-50 text-indigo-700" : "hover:bg-slate-100"}`}>
+              <button onClick={() => { setGroupId(g.id); setShowGroupPicker(false); }}
+                className="flex min-h-[56px] min-w-0 flex-1 items-center gap-3 rounded-2xl px-3 py-2 text-left">
+                <Check size={18} className={`shrink-0 ${g.id === groupId ? "" : "invisible"}`} />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-bold">{g.name}</span>
+                  <span className={`block text-xs ${g.id === groupId ? "text-indigo-500" : "text-slate-500"}`}>
+                    {memberCounts[g.id] ?? 0} thành viên
+                  </span>
                 </span>
-              </span>
-            </button>
+              </button>
+              <button onClick={() => { setShowGroupPicker(false); setGroupForm({ mode: "rename", id: g.id, name: g.name }); }}
+                aria-label={`Đổi tên nhóm ${g.name}`}
+                className="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-slate-400 transition hover:bg-white hover:text-slate-700">
+                <Pencil size={17} />
+              </button>
+              {/* Đóng Sheet trước khi mở hộp xác nhận, để màn hình không chồng hai lớp nền mờ. */}
+              <button onClick={() => { setShowGroupPicker(false); askDeleteGroup(g); }}
+                aria-label={`Xóa nhóm ${g.name}`}
+                className="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-slate-400 transition hover:bg-red-50 hover:text-red-600">
+                <Trash2 size={17} />
+              </button>
+            </div>
           ))}
         </div>
         <div className="my-3 h-px bg-slate-200" />
@@ -1061,9 +1133,50 @@ export default function VioEduApp() {
       </Sheet>
 
       <Sheet open={!!memberForm} title={memberForm?.id ? "Đổi tên thành viên" : "Thêm thành viên"} onClose={() => setMemberForm(null)}>
+        {/* Chỉ khi đang thêm mới: danh sách tài khoản đã đăng nhập. Sheet không
+            tự đóng sau mỗi lần chọn, để thêm liền nhiều người. */}
+        {!memberForm?.id && (
+          <div className="mb-5">
+            <p className="mb-2 text-sm font-bold">Tài khoản đã đăng nhập</p>
+            {profilesError ? (
+              <p className="rounded-2xl bg-amber-50 px-3 py-3 text-sm text-amber-800">
+                Chưa đọc được danh sách tài khoản. Hãy chạy supabase-profiles.sql trong Supabase → SQL Editor.
+                <span className="mt-1 block break-words text-xs text-amber-700">{profilesError}</span>
+              </p>
+            ) : availableProfiles.length === 0 ? (
+              <p className="rounded-2xl bg-slate-50 px-3 py-3 text-sm text-slate-500">
+                {profiles.length === 0 ? "Chưa có tài khoản nào đăng ký." : "Mọi tài khoản đã có trong nhóm này."}
+              </p>
+            ) : (
+              <div className="space-y-1">
+                {availableProfiles.map((prof) => (
+                  <button key={prof.id} disabled={busy} onClick={() => void addMemberFromAccount(prof)}
+                    className="flex min-h-[56px] w-full items-center gap-3 rounded-2xl px-2 py-2 text-left transition hover:bg-slate-100 disabled:opacity-50">
+                    {prof.avatar_url ? (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={prof.avatar_url} alt="" className="h-10 w-10 shrink-0 rounded-2xl object-cover" />
+                    ) : (
+                      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-indigo-50 text-base font-extrabold text-indigo-700">
+                        {profileName(prof).charAt(0).toUpperCase()}
+                      </span>
+                    )}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-bold">{profileName(prof)}</span>
+                      <span className="block truncate text-xs text-slate-500">{prof.email}</span>
+                    </span>
+                    <Plus size={18} className="shrink-0 text-indigo-600" />
+                  </button>
+                ))}
+              </div>
+            )}
+            <div className="mt-4 flex items-center gap-3 text-[11px] font-bold uppercase tracking-wider text-slate-400">
+              <span className="h-px flex-1 bg-slate-200" />hoặc nhập tên<span className="h-px flex-1 bg-slate-200" />
+            </div>
+          </div>
+        )}
         <label className="block">
           <span className="text-sm font-bold">Tên thành viên</span>
-          <input autoFocus value={memberForm?.name ?? ""} onChange={(e) => setMemberForm((f) => (f ? { ...f, name: e.target.value } : f))}
+          <input autoFocus={!!memberForm?.id} value={memberForm?.name ?? ""} onChange={(e) => setMemberForm((f) => (f ? { ...f, name: e.target.value } : f))}
             onKeyDown={(e) => { if (e.key === "Enter") void submitMember(); }} className={`mt-1 ${field}`} placeholder="Nhập tên" />
         </label>
         <button disabled={busy || !memberForm?.name.trim()} onClick={submitMember} className={`mt-5 ${primaryBtn}`}>
