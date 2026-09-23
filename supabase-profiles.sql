@@ -46,7 +46,7 @@ exception when others then
   -- tiện dụng, không đáng để chặn người dùng tạo tài khoản, nên nuốt lỗi ở đây
   -- và để backfill bên dưới bù lại sau.
   return new;
-end $;
+end $$;
 
 drop trigger if exists on_auth_user_saved on auth.users;
 create trigger on_auth_user_saved
