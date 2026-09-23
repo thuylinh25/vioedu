@@ -169,15 +169,13 @@ export default function VioEduApp() {
   // "thêm chính mình" vẫn chạy được khi chưa chạy supabase-profiles.sql.
   const selfProfile: Profile = { id: userId, email: userEmail || null, full_name: userName || null, avatar_url: userAvatar || null };
   const selfIsMember = takenUserIds.has(userId) || takenNames.has(profileName(selfProfile).toLowerCase());
-  const otherProfiles = availableProfiles.filter((p) => p.id !== userId && !studentNames[p.id]);
+  const otherProfiles = availableProfiles.filter((p) => p.id !== userId);
   // Học sinh đã có ở nhóm khác và chưa có trong nhóm đang mở.
   const studentOptions = knownStudents.filter(
     (st) => !takenNames.has(st.name.trim().toLowerCase()) && !(st.user_id && takenUserIds.has(st.user_id)),
   );
-  /** Tên để hiện cho một tài khoản: tên học sinh nếu đã biết, nếu chưa thì tên tài khoản. */
-  const accountLabel = (prof: Profile) => studentNames[prof.id]?.trim() || profileName(prof);
   const accountOptions = [
-    ...(selfIsMember || studentNames[userId] ? [] : [profiles.find((p) => p.id === userId) ?? selfProfile]),
+    ...(selfIsMember ? [] : [profiles.find((p) => p.id === userId) ?? selfProfile]),
     ...otherProfiles,
   ];
 
@@ -1231,115 +1229,27 @@ export default function VioEduApp() {
             Đã tạo nhóm <b>{currentGroup?.name}</b>. Thêm học sinh cho nhóm, hoặc đóng để làm sau.
           </p>
         )}
-        {!memberForm?.id && !memberForm?.account && studentOptions.length > 0 && (
+        {/* Danh sách chỉ hiện TÊN HỌC SINH. Thông tin tài khoản là việc của màn
+            chi tiết học sinh, không phải của ô thêm nhanh này. */}
+        {!memberForm?.id && studentOptions.length > 0 && (
           <div className="mb-5">
             <p className="mb-2 text-sm font-bold">Học sinh đã có</p>
             <div className="space-y-1">
-              {studentOptions.map((st) => {
-                const linked = st.user_id ? profiles.find((x) => x.id === st.user_id) : undefined;
-                return (
-                  <button key={st.name} disabled={busy} onClick={() => void addKnownStudent(st)}
-                    className="flex min-h-[56px] w-full items-center gap-3 rounded-2xl px-2 py-2 text-left transition hover:bg-slate-100 disabled:opacity-50">
-                    {linked?.avatar_url ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={linked.avatar_url} alt="" className="h-10 w-10 shrink-0 rounded-2xl object-cover" />
-                    ) : (
-                      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-indigo-50 text-base font-extrabold text-indigo-700">
-                        {st.name.charAt(0).toUpperCase()}
-                      </span>
-                    )}
-                    <span className="min-w-0 flex-1">
-                      <span className="block truncate font-bold">{st.name}</span>
-                      <span className="block truncate text-xs text-slate-500">
-                        {linked?.email ?? "Chưa gắn tài khoản"}
-                      </span>
-                    </span>
-                    <Plus size={18} className="shrink-0 text-indigo-600" />
-                  </button>
-                );
-              })}
+              {studentOptions.map((st) => (
+                <button key={st.name} disabled={busy} onClick={() => void addKnownStudent(st)}
+                  className="flex min-h-[56px] w-full items-center gap-3 rounded-2xl px-2 py-2 text-left transition hover:bg-slate-100 disabled:opacity-50">
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-indigo-50 text-base font-extrabold text-indigo-700">
+                    {st.name.charAt(0).toUpperCase()}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate font-bold">{st.name}</span>
+                  <Plus size={18} className="shrink-0 text-indigo-600" />
+                </button>
+              ))}
+            </div>
+            <div className="mt-4 flex items-center gap-3 text-[11px] font-bold uppercase tracking-wider text-slate-400">
+              <span className="h-px flex-1 bg-slate-200" />hoặc thêm học sinh mới<span className="h-px flex-1 bg-slate-200" />
             </div>
           </div>
-        )}
-        {/* Chỉ khi đang thêm mới: chọn tài khoản của học sinh. Chọn xong vẫn
-            phải nhập tên học sinh, vì tên tài khoản (thường là tên phụ huynh)
-            không phải tên muốn thấy trong nhóm. */}
-        {!memberForm?.id && (
-          memberForm?.account ? (
-            <div className="mb-5">
-              <p className="mb-2 text-sm font-bold">Tài khoản của học sinh</p>
-              <div className="flex items-center gap-3 rounded-2xl bg-indigo-50 px-3 py-2">
-                {memberForm.account.avatar_url ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={memberForm.account.avatar_url} alt="" className="h-10 w-10 shrink-0 rounded-2xl object-cover" />
-                ) : (
-                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-white text-base font-extrabold text-indigo-700">
-                    {accountLabel(memberForm.account).charAt(0).toUpperCase()}
-                  </span>
-                )}
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate font-bold text-indigo-900">{accountLabel(memberForm.account)}</span>
-                  <span className="block truncate text-xs text-indigo-500">{memberForm.account.email}</span>
-                </span>
-                <button onClick={() => setMemberForm((f) => (f ? { ...f, account: undefined } : f))}
-                  className="shrink-0 rounded-xl px-3 py-2 text-sm font-bold text-indigo-700 transition hover:bg-white">
-                  Đổi
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="mb-5">
-              <p className="mb-2 text-sm font-bold">
-                {studentOptions.length > 0 ? "Hoặc thêm học sinh mới từ tài khoản" : "Tài khoản đã đăng nhập"}
-              </p>
-              {profilesError && (
-                <p className="mb-2 rounded-2xl bg-amber-50 px-3 py-3 text-sm text-amber-800">
-                  Chưa đọc được danh sách tài khoản. Hãy chạy supabase-profiles.sql trong Supabase → SQL Editor.
-                  <span className="mt-1 block break-words text-xs text-amber-700">{profilesError}</span>
-                </p>
-              )}
-              {accountOptions.length === 0 ? (
-                studentOptions.length > 0 ? null : (
-                  <p className="rounded-2xl bg-slate-50 px-3 py-3 text-sm text-slate-500">
-                    Mọi tài khoản đã có trong nhóm này.
-                  </p>
-                )
-              ) : (
-                <div className="space-y-1">
-                  {accountOptions.map((prof) => (
-                    <button key={prof.id}
-                      onClick={() => setMemberForm((f) => (f ? { ...f, account: prof, name: f.name.trim() || studentNames[prof.id] || "" } : f))}
-                      className="flex min-h-[56px] w-full items-center gap-3 rounded-2xl px-2 py-2 text-left transition hover:bg-slate-100">
-                      {prof.avatar_url ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img src={prof.avatar_url} alt="" className="h-10 w-10 shrink-0 rounded-2xl object-cover" />
-                      ) : (
-                        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-indigo-50 text-base font-extrabold text-indigo-700">
-                          {accountLabel(prof).charAt(0).toUpperCase()}
-                        </span>
-                      )}
-                      <span className="min-w-0 flex-1">
-                        <span className="flex items-center gap-2">
-                          <span className="min-w-0 truncate font-bold">{accountLabel(prof)}</span>
-                          {prof.id === userId && (
-                            <span className="shrink-0 rounded-full bg-indigo-100 px-2 py-0.5 text-[11px] font-bold text-indigo-700">Bạn</span>
-                          )}
-                          {!studentNames[prof.id] && (
-                            <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-500">chưa đặt tên</span>
-                          )}
-                        </span>
-                        <span className="block truncate text-xs text-slate-500">{prof.email}</span>
-                      </span>
-                      <ChevronRight size={18} className="shrink-0 text-slate-400" />
-                    </button>
-                  ))}
-                </div>
-              )}
-              <div className="mt-4 flex items-center gap-3 text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                <span className="h-px flex-1 bg-slate-200" />hoặc bỏ qua<span className="h-px flex-1 bg-slate-200" />
-              </div>
-            </div>
-          )
         )}
         <label className="block">
           <span className="text-sm font-bold">Tên học sinh</span>
@@ -1348,6 +1258,30 @@ export default function VioEduApp() {
             onKeyDown={(e) => { if (e.key === "Enter") void submitMember(); }} className={`mt-1 ${field}`}
             placeholder="Nhập tên học sinh" />
         </label>
+        {!memberForm?.id && profilesError && (
+          <p className="mt-4 rounded-2xl bg-amber-50 px-3 py-3 text-sm text-amber-800">
+            Chưa đọc được danh sách tài khoản. Hãy chạy supabase-profiles.sql trong Supabase → SQL Editor.
+            <span className="mt-1 block break-words text-xs text-amber-700">{profilesError}</span>
+          </p>
+        )}
+        {!memberForm?.id && accountOptions.length > 0 && (
+          <label className="mt-4 block">
+            <span className="text-sm font-bold">Tài khoản đăng nhập</span>
+            <span className="mb-1 mt-0.5 block text-xs text-slate-500">Không bắt buộc. Gắn để biết học sinh này đăng nhập bằng tài khoản nào.</span>
+            <select value={memberForm?.account?.id ?? ""} className={field}
+              onChange={(e) => {
+                const picked = accountOptions.find((x) => x.id === e.target.value);
+                setMemberForm((f) => (f ? { ...f, account: picked, name: f.name.trim() || (picked ? studentNames[picked.id] ?? "" : "") } : f));
+              }}>
+              <option value="">Không gắn tài khoản</option>
+              {accountOptions.map((prof) => (
+                <option key={prof.id} value={prof.id}>
+                  {prof.id === userId ? `Tôi · ${prof.email ?? ""}` : prof.email ?? profileName(prof)}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <button disabled={busy || !memberForm?.name.trim()} onClick={submitMember} className={`mt-5 ${primaryBtn}`}>
           {busy ? "Đang lưu..." : memberForm?.id ? "Lưu tên" : "Thêm học sinh"}
         </button>
