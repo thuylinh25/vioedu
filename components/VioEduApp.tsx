@@ -127,6 +127,10 @@ export default function VioEduApp() {
   const [studentNames, setStudentNames] = useState<Record<string, string>>({});
   /** Mọi học sinh đã có trong bất kỳ nhóm nào, không trùng tên. */
   const [knownStudents, setKnownStudents] = useState<Student[]>([]);
+  /** false khi cơ sở dữ liệu chưa có group_members.user_id. */
+  const [linkSupported, setLinkSupported] = useState(true);
+  const [onboardDone, setOnboardDone] = useState(false);
+  const [onboard, setOnboard] = useState<{ name: string; groupId: string; newGroup: string }>({ name: "", groupId: "", newGroup: "" });
   const [sessions, setSessions] = useState<Session[]>([]);
   const [memberCounts, setMemberCounts] = useState<Record<string, number>>({});
   const [groupsLoading, setGroupsLoading] = useState(true);
@@ -206,6 +210,7 @@ export default function VioEduApp() {
     type Tally = { group_id: string; name?: string; user_id?: string | null };
     let counts = await supabase.from("group_members").select("group_id,name,user_id");
     // Cột user_id chưa có thì vẫn đếm được học sinh, chỉ không biết tên học sinh.
+    setLinkSupported(!counts.error);
     if (counts.error) counts = await supabase.from("group_members").select("group_id");
     if (!counts.error) {
       const tally: Record<string, number> = {};
@@ -313,6 +318,11 @@ export default function VioEduApp() {
   }, [loadGroups, loadProfiles]);
 
   useEffect(() => { if (userId) void loadGroupData(groupId); }, [groupId, userId, loadGroupData]);
+
+  useEffect(() => {
+    if (!userId) { setOnboardDone(false); return; }
+    try { if (localStorage.getItem("vioedu.welcome." + userId)) setOnboardDone(true); } catch {}
+  }, [userId]);
 
   // ---- auth ---------------------------------------------------------------
   const submitAuth = async (e: React.FormEvent) => {
@@ -450,6 +460,39 @@ export default function VioEduApp() {
     setTab("home");
     await loadGroups();
     toast(`Đã chuyển học sinh sang "${groups.find((g) => g.id === targetId)?.name ?? "nhóm khác"}" và xóa "${group.name}"`);
+  };
+
+  /** Màn chào lần đầu: đăng ký tên con và chọn nhóm cho con. */
+  const submitOnboarding = async () => {
+    if (!supabase) return;
+    const name = onboard.name.trim();
+    if (!name) return;
+    const newGroupName = onboard.newGroup.trim();
+    if (!onboard.groupId && groups.length === 0 && !newGroupName) return;
+    setBusy(true);
+    const chosen = onboard.groupId || groups[0]?.id || "__new__";
+    let gid = chosen === "__new__" ? "" : chosen;
+    if (!gid) {
+      const g = await supabase.from("groups").insert({ name: newGroupName, owner_id: userId }).select("id,name,owner_id").single();
+      if (g.error) { setBusy(false); toast(g.error.message, "err"); return; }
+      gid = (g.data as Group).id;
+    }
+    const row: Record<string, unknown> = { group_id: gid, name };
+    if (linkSupported) row.user_id = userId;
+    const { error } = await supabase.from("group_members").insert(row);
+    setBusy(false);
+    if (error) { toast(error.message, "err"); return; }
+    setOnboardDone(true);
+    await loadGroups();
+    setGroupId(gid);
+    setTab("home");
+    toast(`Đã thêm ${name} vào nhóm`);
+  };
+
+  const skipOnboarding = () => {
+    setOnboardDone(true);
+    // Nhớ theo từng tài khoản, để lần mở sau không hỏi lại người đã từ chối.
+    try { localStorage.setItem("vioedu.welcome." + userId, "1"); } catch {}
   };
 
   // ---- members ------------------------------------------------------------
@@ -724,6 +767,57 @@ export default function VioEduApp() {
   }
 
   const showDateStrip = tab === "home" && groups.length > 0;
+
+  // Lần đầu đăng nhập: tài khoản chưa gắn với học sinh nào. Hỏi tên con và
+  // nhóm ngay, thay vì thả thẳng vào một màn lịch trống không rõ phải làm gì.
+  const onboardGroup = onboard.groupId || groups[0]?.id || "__new__";
+  if (linkSupported && !onboardDone && !groupsLoading && !studentNames[userId]) {
+    return (
+      <div className="grid min-h-screen place-items-center bg-gradient-to-br from-slate-100 via-slate-50 to-indigo-50 p-5">
+        <div className="w-full max-w-sm rounded-[28px] bg-white p-6 shadow-xl sm:p-8">
+          <p className="text-xs font-bold uppercase tracking-[.2em] text-indigo-500">VioEdu</p>
+          <h1 className="mt-2 text-2xl font-extrabold">Chào {userName || userEmail}</h1>
+          <p className="mt-1 text-sm text-slate-500">Cho biết tên con và nhóm học của con để bắt đầu.</p>
+
+          <div className="mt-6 space-y-4">
+            <label className="block">
+              <span className="text-sm font-bold">Tên con</span>
+              <input autoFocus value={onboard.name} onChange={(e) => setOnboard((f) => ({ ...f, name: e.target.value }))}
+                onKeyDown={(e) => { if (e.key === "Enter") void submitOnboarding(); }}
+                className={`mt-1 ${field}`} placeholder="Ví dụ: Đỗ An Nguyên" />
+            </label>
+
+            <label className="block">
+              <span className="text-sm font-bold">Nhóm học</span>
+              <select value={onboardGroup} onChange={(e) => setOnboard((f) => ({ ...f, groupId: e.target.value }))}
+                className={`mt-1 ${field}`}>
+                {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
+                <option value="__new__">+ Tạo nhóm mới</option>
+              </select>
+            </label>
+
+            {onboardGroup === "__new__" && (
+              <label className="block">
+                <span className="text-sm font-bold">Tên nhóm mới</span>
+                <input value={onboard.newGroup} onChange={(e) => setOnboard((f) => ({ ...f, newGroup: e.target.value }))}
+                  className={`mt-1 ${field}`} placeholder="Ví dụ: Nhóm 1" />
+              </label>
+            )}
+
+            <button
+              disabled={busy || !onboard.name.trim() || (onboardGroup === "__new__" && !onboard.newGroup.trim())}
+              onClick={submitOnboarding} className={primaryBtn}>
+              {busy ? "Đang lưu..." : "Bắt đầu"}
+            </button>
+            {/* Tài khoản quản lý nhiều học sinh thì không có "con" nào để khai. */}
+            <button type="button" onClick={skipOnboarding} className="min-h-[44px] w-full text-sm font-bold text-slate-500">
+              Bỏ qua, tôi quản lý nhiều học sinh
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-100 via-slate-50 to-indigo-50">
