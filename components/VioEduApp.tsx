@@ -1,5 +1,6 @@
 "use client";
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import type { Session as AuthSession } from "@supabase/supabase-js";
 import {
   CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, Clock3, ExternalLink,
   Eye, EyeOff, Home, LogOut, Pencil, Plus, Settings, Trash2, User, UsersRound, WifiOff,
@@ -22,6 +23,13 @@ type Student = { name: string; user_id: string | null };
 type Session = {
   id: number; date: string; memberId: string | null;
   memberName: string; time: string; duration: number; done: boolean;
+};
+/** Hàng schedules trả về từ Supabase, kèm tên học sinh lấy qua quan hệ. */
+type ScheduleRow = {
+  id: number; study_date: string; member_id: string | null; student_name: string | null;
+  start_time: string; duration: number; done: boolean;
+  // Quan hệ một-một, nhưng kiểu suy ra từ supabase-js là mảng, nên nhận cả hai dạng.
+  group_members?: { name: string } | { name: string }[] | null;
 };
 type Tab = "home" | "people" | "stats" | "settings";
 type OAuthProvider = "google" | "facebook";
@@ -64,6 +72,11 @@ const TABS: { id: Tab; icon: typeof Home; label: string }[] = [
 ];
 const TAB_TITLE: Record<Tab, string> = { home: "Lịch học", people: "Học sinh", stats: "Tiến độ", settings: "Cài đặt" };
 const DURATIONS = [20, 30, 45, 60, 90];
+const subscribeOnline = (cb: () => void) => {
+  addEventListener("online", cb);
+  addEventListener("offline", cb);
+  return () => { removeEventListener("online", cb); removeEventListener("offline", cb); };
+};
 /** Trang VioEdu mở ra từ menu tài khoản và từ nút "Học ngay". */
 const VIOEDU_URL = "https://vio.edu.vn/";
 /** New schedules open at 07:00, so the picker shows AM by default. */
@@ -78,9 +91,9 @@ const primaryBtn = "min-h-[48px] w-full rounded-2xl bg-indigo-600 px-4 font-bold
 
 /** Ảnh đại diện tài khoản. Kích thước do lớp cha quyết định, nên cùng một
  *  component dùng được cho cả nút trên header lẫn hàng trong menu. */
-function AccountAvatar({ name, email, avatar, broken, onBroken, className = "" }: {
+function AccountAvatar({ name, email, avatar, broken, onBroken, tone, className = "" }: {
   name: string; email: string; avatar: string;
-  broken: boolean; onBroken: () => void; className?: string;
+  broken: boolean; onBroken: () => void; tone: "onPurple" | "onWhite"; className?: string;
 }) {
   const initial = (name || email).trim().charAt(0).toUpperCase();
   const box = `shrink-0 overflow-hidden rounded-full ${className}`;
@@ -88,8 +101,10 @@ function AccountAvatar({ name, email, avatar, broken, onBroken, className = "" }
     // eslint-disable-next-line @next/next/no-img-element
     return <img src={avatar} alt="" onError={onBroken} className={`${box} object-cover`} />;
   }
+  // Màu nền phải đi theo nền đặt avatar lên: chữ trắng trên nền trắng thì mất hút.
+  const fallback = tone === "onPurple" ? "bg-white/25 text-white" : "bg-indigo-100 text-indigo-700";
   return (
-    <span className={`${box} grid place-items-center bg-white/25 font-extrabold text-white`}>
+    <span className={`${box} grid place-items-center font-extrabold ${fallback}`}>
       {initial || <User size={18} />}
     </span>
   );
@@ -118,10 +133,12 @@ function TimePicker({ value, onChange }: { value: string; onChange: (v: string) 
 
 export default function VioEduApp() {
   const today = useMemo(() => new Date(), []);
+  // Trạng thái mạng thuộc về trình duyệt, không phải state của React; đọc thẳng
+  // từ nguồn thay vì đồng bộ lại bằng useEffect. Giá trị khi dựng sẵn ở máy chủ là true.
+  const online = useSyncExternalStore(subscribeOnline, () => navigator.onLine, () => true);
   const [selectedDate, setSelectedDate] = useState(today);
   const [tab, setTab] = useState<Tab>("home");
   const [calView, setCalView] = useState<"week" | "month">("week");
-  const [online, setOnline] = useState(true);
 
   const [authReady, setAuthReady] = useState(false);
   const [userId, setUserId] = useState("");
@@ -148,6 +165,9 @@ export default function VioEduApp() {
   const [studentNames, setStudentNames] = useState<Record<string, string>>({});
   /** Mọi học sinh đã có trong bất kỳ nhóm nào, không trùng tên. */
   const [knownStudents, setKnownStudents] = useState<Student[]>([]);
+  /** group_id → tên các học sinh trong nhóm, dựng từ chính lần quét của loadGroups. */
+  const [groupStudentNames, setGroupStudentNames] = useState<Record<string, string[]>>({});
+  const [countsFailed, setCountsFailed] = useState(false);
   /** false khi cơ sở dữ liệu chưa có group_members.user_id. */
   const [linkSupported, setLinkSupported] = useState(true);
   const [onboardDone, setOnboardDone] = useState(false);
@@ -210,11 +230,11 @@ export default function VioEduApp() {
     ...otherProfiles,
   ];
 
-  const mapSchedule = (r: any): Session => ({
+  const mapSchedule = (r: ScheduleRow): Session => ({
     id: r.id,
     date: r.study_date,
     memberId: r.member_id,
-    memberName: r.group_members?.name ?? r.student_name ?? "Học sinh",
+    memberName: (Array.isArray(r.group_members) ? r.group_members[0]?.name : r.group_members?.name) ?? r.student_name ?? "Học sinh",
     time: String(r.start_time).slice(0, 5),
     duration: r.duration,
     done: r.done,
@@ -237,14 +257,17 @@ export default function VioEduApp() {
     // Cột user_id chưa có thì vẫn đếm được học sinh, chỉ không biết tên học sinh.
     setLinkSupported(!counts.error);
     if (counts.error) counts = await supabase.from("group_members").select("group_id");
+    setCountsFailed(!!counts.error);
     if (!counts.error) {
       const tally: Record<string, number> = {};
       const names: Record<string, string> = {};
       // Gộp theo tên: cùng một học sinh có mặt ở nhiều nhóm chỉ hiện một lần,
       // và bản ghi nào có gắn tài khoản thì được ưu tiên giữ lại.
       const students = new Map<string, Student>();
+      const byGroup: Record<string, string[]> = {};
       for (const row of (counts.data ?? []) as Tally[]) {
         tally[row.group_id] = (tally[row.group_id] ?? 0) + 1;
+        if (row.name) (byGroup[row.group_id] ??= []).push(row.name);
         if (row.user_id && row.name) names[row.user_id] = row.name;
         const name = row.name?.trim();
         if (!name) continue;
@@ -255,6 +278,7 @@ export default function VioEduApp() {
       setMemberCounts(tally);
       setStudentNames(names);
       setKnownStudents([...students.values()]);
+      setGroupStudentNames(byGroup);
     }
   }, []);
 
@@ -299,16 +323,9 @@ export default function VioEduApp() {
   }, [fetchMembers]);
 
   useEffect(() => {
-    const on = () => setOnline(true), off = () => setOnline(false);
-    setOnline(navigator.onLine);
-    addEventListener("online", on);
-    addEventListener("offline", off);
-    return () => { removeEventListener("online", on); removeEventListener("offline", off); };
-  }, []);
-
-  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- báo thiếu cấu hình một lần khi dựng, không có vòng render nào lặp lại
     if (!supabase) { setAuthError("Thiếu cấu hình Supabase trong .env.local"); setAuthReady(true); setGroupsLoading(false); return; }
-    const apply = (session: any) => {
+    const apply = (session: AuthSession | null) => {
       const u = session?.user ?? null;
       setAuthReady(true);
       setUserId(u?.id ?? "");
@@ -342,9 +359,11 @@ export default function VioEduApp() {
     return () => subscription.unsubscribe();
   }, [loadGroups, loadProfiles]);
 
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- tải dữ liệu nhóm khi đổi nhóm; cờ loading phải đặt trước khi request đi
   useEffect(() => { if (userId) void loadGroupData(groupId); }, [groupId, userId, loadGroupData]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- đọc localStorage một lần cho mỗi tài khoản; đọc lúc render sẽ lệch giữa máy chủ và trình duyệt
     if (!userId) { setOnboardDone(false); return; }
     try { if (localStorage.getItem("vioedu.welcome." + userId)) setOnboardDone(true); } catch {}
   }, [userId]);
@@ -421,6 +440,7 @@ export default function VioEduApp() {
         // Onboarding vẫn đang mở: chọn sẵn nhóm vừa tạo và giữ nguyên tên học
         // sinh người dùng đã gõ, đừng kéo họ sang màn khác.
         setOnboard((f) => ({ ...f, groupId: (data as Group).id }));
+        setGroupStudentNames((n) => ({ ...n, [(data as Group).id]: [] }));
       } else {
         // Bước 2: nhóm vừa tạo còn rỗng, nên mở thẳng ô thêm học sinh thay vì
         // bắt người dùng tự tìm đường sang tab Học sinh.
@@ -823,7 +843,6 @@ export default function VioEduApp() {
         <div className="w-full max-w-sm rounded-[28px] bg-white p-6 shadow-xl sm:p-8">
           <p className="text-xs font-bold uppercase tracking-[.2em] text-indigo-500">VioEdu</p>
           <h1 className="mt-2 text-2xl font-extrabold">Thiết lập hồ sơ học sinh</h1>
-          <p className="mt-1 text-sm text-slate-500">Thêm học sinh đầu tiên để bắt đầu lên lịch học.</p>
 
           <div className="mt-6 space-y-4">
             <label className="block">
@@ -848,14 +867,34 @@ export default function VioEduApp() {
                 {groups.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
                 <option value="__new__">+ Tạo nhóm mới</option>
               </select>
+              {/* Chỉ để xác nhận đang chọn đúng nhóm: không thẻ, không avatar,
+                  không menu. Dữ liệu lấy từ lần quét của loadGroups, không gọi thêm. */}
+              {onboardGroup && (countsFailed ? (
+                <span className="mt-2 block text-xs text-slate-400">Không thể tải thông tin nhóm</span>
+              ) : (() => {
+                const inGroup = groupStudentNames[onboardGroup] ?? [];
+                if (inGroup.length === 0) {
+                  return <span className="mt-2 block text-xs text-slate-500">Chưa có học sinh trong nhóm này</span>;
+                }
+                const shown = inGroup.slice(0, 3).join(", ");
+                const rest = inGroup.length - 3;
+                return (
+                  <span className="mt-2 block text-xs text-slate-500">
+                    {inGroup.length} học sinh trong nhóm
+                    <span className="mt-0.5 block break-words text-slate-400">
+                      {shown}{rest > 0 ? ` +${rest}` : ""}
+                    </span>
+                  </span>
+                );
+              })())}
             </label>
 
             <button disabled={busy} onClick={submitOnboarding} className={primaryBtn}>
               {busy ? "Đang lưu..." : "Tiếp tục"}
             </button>
-            {/* Không phải bỏ qua: đây là đường đi của người quản lý nhiều học sinh. */}
+            {/* Dẫn sang màn Học sinh để thêm nhiều học sinh, chứ không bỏ trống hồ sơ. */}
             <button type="button" onClick={manageManyStudents} className="min-h-[44px] w-full text-sm font-bold text-slate-500 transition hover:text-slate-700">
-              Tôi quản lý nhiều học sinh
+              Bỏ qua
             </button>
           </div>
         </div>
@@ -898,7 +937,7 @@ export default function VioEduApp() {
                 aria-label={`Tài khoản ${userName || userEmail}`}
                 className="grid h-11 w-11 shrink-0 place-items-center rounded-full transition hover:bg-white/15">
                 <AccountAvatar name={userName} email={userEmail} avatar={userAvatar}
-                  broken={avatarBroken} onBroken={() => setAvatarBroken(true)}
+                  broken={avatarBroken} onBroken={() => setAvatarBroken(true)} tone="onPurple"
                   className="h-10 w-10 ring-2 ring-white/40" />
               </button>
             )}
@@ -1308,11 +1347,12 @@ export default function VioEduApp() {
       <Sheet open={showAccount} title="Tài khoản" onClose={() => setShowAccount(false)}>
         <div className="flex items-center gap-3 rounded-2xl bg-slate-50 p-3">
           <AccountAvatar name={userName} email={userEmail} avatar={userAvatar}
-            broken={avatarBroken} onBroken={() => setAvatarBroken(true)}
-            className="h-12 w-12 bg-indigo-100 text-indigo-700" />
+            broken={avatarBroken} onBroken={() => setAvatarBroken(true)} tone="onWhite"
+            className="h-12 w-12 text-lg" />
           <span className="min-w-0 flex-1">
             <b className="block truncate">{userName || userEmail}</b>
-            <span className="block truncate text-xs text-slate-500">{userEmail}</span>
+            {/* Không lặp lại email làm dòng phụ khi nó đã là dòng chính. */}
+            {userName && <span className="block truncate text-xs text-slate-500">{userEmail}</span>}
           </span>
         </div>
         <div className="my-3 h-px bg-slate-200" />
