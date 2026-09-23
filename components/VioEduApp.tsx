@@ -520,7 +520,7 @@ export default function VioEduApp() {
     setConfirm({
       title: `Xóa nhóm "${target.name}"?`,
       body: count > 0
-        ? `Hồ sơ của ${count} học sinh trong nhóm và lịch học của họ sẽ bị xóa vĩnh viễn. Tài khoản đăng nhập của các em không bị xóa — các em vẫn đăng nhập được và có thể thêm lại vào nhóm khác. Không thể hoàn tác.`
+        ? `${count} học sinh sẽ rời khỏi nhóm này và lịch học của họ trong nhóm sẽ bị xóa. Hồ sơ và tên của các em được giữ lại, nên thêm vào nhóm khác lúc nào cũng được. Không thể hoàn tác.`
         : "Nhóm này không còn học sinh nào. Lịch học của nhóm sẽ bị xóa. Không thể hoàn tác.",
       confirmLabel: count > 0 ? "Xóa nhóm và hồ sơ" : "Xóa nhóm",
       onConfirm: async () => {
@@ -528,6 +528,13 @@ export default function VioEduApp() {
         setConfirmBusy(true);
         // Children first: the FK may not cascade, and a failed group delete
         // would otherwise leave the UI claiming success.
+        // Giữ lại hồ sơ học sinh trước khi xóa: tên được ghi lên tài khoản của
+        // từng em, nên xóa nhóm chỉ mất chỗ ngồi trong nhóm chứ không mất người.
+        const keep = await supabase.from("group_members").select(memberCols.current).eq("group_id", target.id);
+        if (!keep.error) {
+          for (const r of (keep.data ?? []) as unknown as Member[]) await rememberStudentName(r.user_id, r.name);
+          void loadProfiles();
+        }
         const schedulesDel = await supabase.from("schedules").delete().eq("group_id", target.id);
         if (schedulesDel.error) { setConfirmBusy(false); setConfirm(null); toast(schedulesDel.error.message, "err"); return; }
         const membersDel = await supabase.from("group_members").delete().eq("group_id", target.id);
@@ -608,6 +615,15 @@ export default function VioEduApp() {
     await loadGroupData(gid);
     setTab("home");
     toast(`Đã thêm ${name} vào nhóm`);
+  };
+
+  /** Mở lại màn thiết lập hồ sơ cho tài khoản đã từng bỏ qua. */
+  const reopenOnboarding = () => {
+    setShowAccount(false);
+    setOnboard({ name: "", groupId: "" });
+    setOnboardError("");
+    try { localStorage.removeItem("vioedu.welcome." + userId); } catch {}
+    setOnboardDone(false);
   };
 
   /** Bỏ qua bước thiết lập và vào thẳng màn Lịch. */
@@ -1478,10 +1494,15 @@ export default function VioEduApp() {
         </div>
         <div className="my-3 h-px bg-slate-200" />
         <div className="space-y-1">
-          {selfMember && (
+          {selfMember ? (
             <button onClick={openSelfProfile}
               className="flex min-h-[52px] w-full items-center gap-3 rounded-2xl px-3 font-bold text-slate-700 transition hover:bg-slate-100">
               <User size={18} className="text-slate-400" />Hồ sơ học sinh
+            </button>
+          ) : linkSupported && (
+            <button onClick={reopenOnboarding}
+              className="flex min-h-[52px] w-full items-center gap-3 rounded-2xl px-3 font-bold text-slate-700 transition hover:bg-slate-100">
+              <User size={18} className="text-slate-400" />Thiết lập hồ sơ học sinh
             </button>
           )}
           <button onClick={() => { setShowAccount(false); setTab("settings"); }}
@@ -1724,7 +1745,7 @@ export default function VioEduApp() {
 
       <Sheet open={!!groupDelete} title={`Xóa nhóm "${groupDelete?.group.name ?? ""}"`} onClose={() => setGroupDelete(null)}>
         <p className="text-sm leading-relaxed text-slate-600">
-          Nhóm này còn <b>{memberCounts[groupDelete?.group.id ?? ""] ?? 0} học sinh</b>. Chuyển họ sang nhóm khác để giữ lại cùng lịch học, hoặc xóa hồ sơ của họ trong nhóm này. Tài khoản đăng nhập của các em không bị xóa trong cả hai trường hợp.
+          Nhóm này còn <b>{memberCounts[groupDelete?.group.id ?? ""] ?? 0} học sinh</b>. Chuyển họ sang nhóm khác để giữ cả lịch học, hoặc xóa nhóm luôn — hồ sơ các em vẫn còn, chỉ mất lịch học trong nhóm này.
         </p>
         <label className="mt-4 block">
           <span className="text-sm font-bold">Chuyển học sinh sang nhóm</span>
@@ -1743,7 +1764,7 @@ export default function VioEduApp() {
         <button disabled={busy}
           onClick={() => { const g = groupDelete!.group; setGroupDelete(null); confirmDeleteGroup(g); }}
           className="min-h-[48px] w-full rounded-2xl bg-red-50 px-4 font-bold text-red-600 transition hover:bg-red-100 disabled:opacity-50">
-          Xóa nhóm và hồ sơ học sinh trong nhóm
+          Xóa nhóm, giữ lại hồ sơ học sinh
         </button>
       </Sheet>
 
