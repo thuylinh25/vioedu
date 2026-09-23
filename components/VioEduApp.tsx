@@ -51,16 +51,16 @@ function profileName(p: Profile): string {
   const full = (p.full_name ?? "").trim();
   if (full) return full;
   const email = (p.email ?? "").trim();
-  return email ? email.split("@")[0] : "Thành viên";
+  return email ? email.split("@")[0] : "Học sinh";
 }
 
 const TABS: { id: Tab; icon: typeof Home; label: string }[] = [
   { id: "home", icon: Home, label: "Lịch" },
-  { id: "people", icon: UsersRound, label: "Thành viên" },
+  { id: "people", icon: UsersRound, label: "Học sinh" },
   { id: "stats", icon: CalendarDays, label: "Tiến độ" },
   { id: "settings", icon: Settings, label: "Cài đặt" },
 ];
-const TAB_TITLE: Record<Tab, string> = { home: "Lịch học", people: "Thành viên", stats: "Tiến độ", settings: "Cài đặt" };
+const TAB_TITLE: Record<Tab, string> = { home: "Lịch học", people: "Học sinh", stats: "Tiến độ", settings: "Cài đặt" };
 const DURATIONS = [20, 30, 45, 60, 90];
 /** New schedules open at 07:00, so the picker shows AM by default. */
 const DEFAULT_TIME = "07:00";
@@ -137,6 +137,9 @@ export default function VioEduApp() {
   const [busy, setBusy] = useState(false);
 
   const [showGroupPicker, setShowGroupPicker] = useState(false);
+  const [studentDetail, setStudentDetail] = useState<Member | null>(null);
+  const [moveForm, setMoveForm] = useState<{ member: Member; targetId: string } | null>(null);
+  const [groupDelete, setGroupDelete] = useState<{ group: Group; targetId: string } | null>(null);
   const [groupForm, setGroupForm] = useState<{ mode: "create" | "rename"; id?: string; name: string } | null>(null);
   const [memberForm, setMemberForm] = useState<{ id: string | null; name: string; step2?: boolean; account?: Profile } | null>(null);
   const [scheduleForm, setScheduleForm] = useState<{ id: number | null; memberId: string; time: string; duration: number } | null>(null);
@@ -182,7 +185,7 @@ export default function VioEduApp() {
     id: r.id,
     date: r.study_date,
     memberId: r.member_id,
-    memberName: r.group_members?.name ?? r.student_name ?? "Thành viên",
+    memberName: r.group_members?.name ?? r.student_name ?? "Học sinh",
     time: String(r.start_time).slice(0, 5),
     duration: r.duration,
     done: r.done,
@@ -202,7 +205,7 @@ export default function VioEduApp() {
     setGroupId((prev) => (prev && list.some((g) => g.id === prev) ? prev : list[0]?.id ?? ""));
     type Tally = { group_id: string; name?: string; user_id?: string | null };
     let counts = await supabase.from("group_members").select("group_id,name,user_id");
-    // Cột user_id chưa có thì vẫn đếm được thành viên, chỉ không biết tên học sinh.
+    // Cột user_id chưa có thì vẫn đếm được học sinh, chỉ không biết tên học sinh.
     if (counts.error) counts = await supabase.from("group_members").select("group_id");
     if (!counts.error) {
       const tally: Record<string, number> = {};
@@ -229,7 +232,7 @@ export default function VioEduApp() {
     if (!supabase) return;
     const { data, error } = await supabase.from("profiles").select("id,email,full_name,avatar_url").order("created_at");
     // Bảng profiles có thể chưa được tạo. Giữ lại lời báo lỗi và hiện nó ngay
-    // trong ô thêm thành viên: một danh sách trống lặng lẽ không cho biết là
+    // trong ô thêm học sinh: một danh sách trống lặng lẽ không cho biết là
     // chưa chạy SQL hay thật sự chưa có tài khoản nào.
     setProfilesError(error ? error.message : "");
     setProfiles(error ? [] : ((data ?? []) as Profile[]));
@@ -381,8 +384,8 @@ export default function VioEduApp() {
       setMemberCounts((c) => ({ ...c, [(data as Group).id]: 0 }));
       setGroupId((data as Group).id);
       setGroupForm(null);
-      // Bước 2: nhóm vừa tạo còn rỗng, nên mở thẳng ô thêm thành viên thay vì
-      // bắt người dùng tự tìm đường sang tab Thành viên.
+      // Bước 2: nhóm vừa tạo còn rỗng, nên mở thẳng ô thêm học sinh thay vì
+      // bắt người dùng tự tìm đường sang tab Học sinh.
       setTab("people");
       setMemberForm({ id: null, name: "", step2: true });
       toast(`Đã tạo nhóm "${name}"`);
@@ -399,9 +402,18 @@ export default function VioEduApp() {
   };
 
   const askDeleteGroup = (target: Group) => {
+    const count = memberCounts[target.id] ?? 0;
+    const others = groups.filter((g) => g.id !== target.id);
+    // Còn học sinh và còn nhóm khác để nhận: hỏi phương án an toàn trước, thay
+    // vì lặng lẽ xóa kèm cả học sinh lẫn lịch học của họ.
+    if (count > 0 && others.length > 0) { setGroupDelete({ group: target, targetId: others[0].id }); return; }
+    confirmDeleteGroup(target);
+  };
+
+  const confirmDeleteGroup = (target: Group) => {
     setConfirm({
       title: `Xóa nhóm "${target.name}"?`,
-      body: "Toàn bộ thành viên và lịch học của nhóm này sẽ bị xóa vĩnh viễn. Không thể hoàn tác.",
+      body: "Toàn bộ học sinh và lịch học của nhóm này sẽ bị xóa vĩnh viễn. Không thể hoàn tác.",
       confirmLabel: "Xóa nhóm",
       onConfirm: async () => {
         if (!supabase) return;
@@ -425,6 +437,24 @@ export default function VioEduApp() {
     });
   };
 
+  /** Chuyển cả học sinh của một nhóm sang nhóm khác rồi mới xóa nhóm rỗng. */
+  const moveAllThenDelete = async () => {
+    if (!supabase || !groupDelete) return;
+    const { group, targetId } = groupDelete;
+    setBusy(true);
+    const sch = await supabase.from("schedules").update({ group_id: targetId }).eq("group_id", group.id);
+    if (sch.error) { setBusy(false); toast(sch.error.message, "err"); return; }
+    const mem = await supabase.from("group_members").update({ group_id: targetId }).eq("group_id", group.id);
+    if (mem.error) { setBusy(false); toast(mem.error.message, "err"); return; }
+    const { error } = await supabase.from("groups").delete().eq("id", group.id);
+    setBusy(false);
+    if (error) { toast(error.message, "err"); return; }
+    setGroupDelete(null);
+    setTab("home");
+    await loadGroups();
+    toast(`Đã chuyển học sinh sang "${groups.find((g) => g.id === targetId)?.name ?? "nhóm khác"}" và xóa "${group.name}"`);
+  };
+
   // ---- members ------------------------------------------------------------
   const submitMember = async () => {
     if (!supabase || !memberForm || !groupId) return;
@@ -440,7 +470,7 @@ export default function VioEduApp() {
       if (linked) setStudentNames((n) => ({ ...n, [linked]: name }));
       setMembers((v) => v.map((m) => (m.id === editingId ? { ...m, name } : m)));
       setSessions((v) => v.map((s) => (s.memberId === editingId ? { ...s, memberName: name } : s)));
-      toast("Đã đổi tên thành viên");
+      toast("Đã đổi tên học sinh");
     } else {
       // Tên lưu vào nhóm là tên học sinh do người dùng nhập, không phải tên tài
       // khoản. user_id chỉ gửi khi cơ sở dữ liệu đã có cột đó.
@@ -471,14 +501,42 @@ export default function VioEduApp() {
     toast(`Đã thêm ${st.name}`);
   };
 
+  const openMove = (m: Member) => {
+    setStudentDetail(null);
+    setMoveForm({ member: m, targetId: groups.find((g) => g.id !== groupId)?.id ?? "" });
+  };
+
+  const submitMove = async () => {
+    if (!supabase || !moveForm || !moveForm.targetId) return;
+    const { member, targetId } = moveForm;
+    setBusy(true);
+    const mv = await supabase.from("group_members").update({ group_id: targetId }).eq("id", member.id);
+    if (mv.error) { setBusy(false); toast(mv.error.message, "err"); return; }
+    // Lịch học phải đi cùng học sinh, nếu không các buổi đã lên sẽ mắc lại ở nhóm cũ.
+    const sch = await supabase.from("schedules").update({ group_id: targetId }).eq("member_id", member.id);
+    setBusy(false);
+    if (sch.error) { toast(sch.error.message, "err"); return; }
+    const moved = sessions.filter((x) => x.memberId === member.id).length;
+    setMembers((v) => v.filter((x) => x.id !== member.id));
+    setSessions((v) => v.filter((x) => x.memberId !== member.id));
+    setMemberCounts((c) => ({
+      ...c,
+      [groupId]: Math.max(0, (c[groupId] ?? 1) - 1),
+      [targetId]: (c[targetId] ?? 0) + 1,
+    }));
+    setMoveForm(null);
+    const to = groups.find((g) => g.id === targetId)?.name ?? "nhóm khác";
+    toast(moved > 0 ? `Đã chuyển ${member.name} sang ${to} cùng ${moved} buổi học` : `Đã chuyển ${member.name} sang ${to}`);
+  };
+
   const askDeleteMember = (m: Member) => {
     const count = sessions.filter((s) => s.memberId === m.id).length;
     setConfirm({
       title: `Xóa ${m.name}?`,
       body: count > 0
-        ? `${count} buổi học của thành viên này cũng sẽ bị xóa. Không thể hoàn tác.`
-        : "Thành viên này sẽ bị xóa khỏi nhóm. Không thể hoàn tác.",
-      confirmLabel: "Xóa thành viên",
+        ? `${count} buổi học của học sinh này cũng sẽ bị xóa. Không thể hoàn tác.`
+        : "Học sinh này sẽ bị xóa khỏi nhóm. Không thể hoàn tác.",
+      confirmLabel: "Xóa học sinh",
       onConfirm: async () => {
         if (!supabase) return;
         setConfirmBusy(true);
@@ -490,7 +548,7 @@ export default function VioEduApp() {
         setMembers((v) => v.filter((x) => x.id !== m.id));
         setMemberCounts((c) => ({ ...c, [m.group_id]: Math.max(0, (c[m.group_id] ?? 1) - 1) }));
         setSessions((v) => v.filter((s) => s.memberId !== m.id));
-        toast("Đã xóa thành viên");
+        toast("Đã xóa học sinh");
       },
     });
   };
@@ -763,7 +821,7 @@ export default function VioEduApp() {
             <EmptyState
               icon={<UsersRound size={22} />}
               title="Chưa có nhóm nào"
-              hint="Tạo nhóm đầu tiên để bắt đầu thêm thành viên và lịch học."
+              hint="Tạo nhóm đầu tiên để bắt đầu thêm học sinh và lịch học."
               action={
                 <button onClick={() => setGroupForm({ mode: "create", name: "" })} className={primaryBtn}>
                   <Plus size={18} className="mr-1 inline" />Tạo nhóm mới
@@ -857,9 +915,9 @@ export default function VioEduApp() {
                   {dataLoading ? (
                     <div className="space-y-3"><Skeleton className="h-32" /><Skeleton className="h-32" /></div>
                   ) : members.length === 0 ? (
-                    <EmptyState icon={<UsersRound size={22} />} title="Nhóm chưa có thành viên"
-                      hint="Thêm thành viên trước khi lên lịch học."
-                      action={<button onClick={() => { setTab("people"); setMemberForm({ id: null, name: "" }); }} className={primaryBtn}>Thêm thành viên</button>} />
+                    <EmptyState icon={<UsersRound size={22} />} title="Nhóm chưa có học sinh"
+                      hint="Thêm học sinh trước khi lên lịch học."
+                      action={<button onClick={() => { setTab("people"); setMemberForm({ id: null, name: "" }); }} className={primaryBtn}>Thêm học sinh</button>} />
                   ) : daily.length === 0 ? (
                     <EmptyState icon={<CalendarDays size={22} />}
                       title={dateKey(selectedDate) === dateKey(today) ? "Không có lịch học hôm nay" : "Không có lịch học ngày này"}
@@ -921,7 +979,7 @@ export default function VioEduApp() {
                       <ChevronDown size={18} className="shrink-0 text-slate-500" />
                     </button>
                     {members.length > 0 && (
-                      <button onClick={() => setMemberForm({ id: null, name: "" })} aria-label="Thêm thành viên"
+                      <button onClick={() => setMemberForm({ id: null, name: "" })} aria-label="Thêm học sinh"
                         className="flex min-h-[44px] shrink-0 items-center gap-1 rounded-2xl bg-indigo-50 px-3 font-bold text-indigo-700 transition hover:bg-indigo-100">
                         <Plus size={17} />Thêm
                       </button>
@@ -930,11 +988,11 @@ export default function VioEduApp() {
                   {dataLoading ? (
                     <div className="space-y-2"><Skeleton className="h-20" /><Skeleton className="h-20" /></div>
                   ) : members.length === 0 ? (
-                    <EmptyState icon={<UsersRound size={22} />} title="Chưa có thành viên"
-                      hint="Thêm thành viên để bắt đầu lên lịch."
+                    <EmptyState icon={<UsersRound size={22} />} title="Chưa có học sinh"
+                      hint="Thêm học sinh để bắt đầu lên lịch."
                       action={
                         <button onClick={() => setMemberForm({ id: null, name: "" })} className={primaryBtn}>
-                          <Plus size={18} className="mr-1 inline" />Thêm thành viên
+                          <Plus size={18} className="mr-1 inline" />Thêm học sinh
                         </button>
                       } />
                   ) : (
@@ -943,19 +1001,25 @@ export default function VioEduApp() {
                         const total = sessions.filter((s) => s.memberId === m.id).length;
                         const done = sessions.filter((s) => s.memberId === m.id && s.done).length;
                         return (
-                          <div key={m.id} className="flex items-center gap-3 rounded-3xl bg-white p-4 shadow-sm">
-                            <div className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-indigo-50 text-base font-extrabold text-indigo-700">
-                              {m.name.trim().charAt(0).toUpperCase() || "?"}
-                            </div>
-                            <div className="min-w-0 flex-1">
-                              <b className="block truncate leading-tight">{m.name}</b>
-                              <p className="mt-0.5 text-xs text-slate-500">{done}/{total} buổi hoàn thành</p>
-                            </div>
+                          <div key={m.id} className="flex items-center gap-1 rounded-3xl bg-white pr-2 shadow-sm">
+                            {/* Cả thẻ mở chi tiết học sinh. RowMenu nằm ngoài nút này
+                                nên không cần chặn sự kiện nổi lên. */}
+                            <button onClick={() => setStudentDetail(m)} aria-label={`Xem ${m.name}`}
+                              className="flex min-w-0 flex-1 items-center gap-3 rounded-3xl p-4 text-left transition hover:bg-slate-50">
+                              <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-indigo-50 text-base font-extrabold text-indigo-700">
+                                {m.name.trim().charAt(0).toUpperCase() || "?"}
+                              </span>
+                              <span className="min-w-0 flex-1">
+                                <b className="block truncate leading-tight">{m.name}</b>
+                                <span className="mt-0.5 block text-xs text-slate-500">{done}/{total} buổi hoàn thành</span>
+                              </span>
+                            </button>
                             <RowMenu
                               label={`Tùy chọn cho ${m.name}`}
                               items={[
-                                { label: "Đổi tên", icon: <Pencil size={15} />, onSelect: () => setMemberForm({ id: m.id, name: m.name }) },
-                                { label: "Xóa thành viên", icon: <Trash2 size={15} />, danger: true, onSelect: () => askDeleteMember(m) },
+                                { label: "Sửa thông tin", icon: <Pencil size={15} />, onSelect: () => setMemberForm({ id: m.id, name: m.name }) },
+                                { label: "Chuyển nhóm", icon: <UsersRound size={15} />, onSelect: () => openMove(m) },
+                                { label: "Xóa học sinh", icon: <Trash2 size={15} />, danger: true, onSelect: () => askDeleteMember(m) },
                               ]}
                             />
                           </div>
@@ -979,11 +1043,11 @@ export default function VioEduApp() {
                   {dataLoading ? (
                     <div className="space-y-3"><Skeleton className="h-28" /><Skeleton className="h-20" /><Skeleton className="h-20" /></div>
                   ) : members.length === 0 ? (
-                    <EmptyState icon={<UsersRound size={22} />} title="Nhóm chưa có thành viên"
-                      hint="Thêm thành viên rồi lên lịch học để theo dõi tiến độ tại đây."
+                    <EmptyState icon={<UsersRound size={22} />} title="Nhóm chưa có học sinh"
+                      hint="Thêm học sinh rồi lên lịch học để theo dõi tiến độ tại đây."
                       action={
                         <button onClick={() => { setTab("people"); setMemberForm({ id: null, name: "" }); }} className={primaryBtn}>
-                          <Plus size={18} className="mr-1 inline" />Thêm thành viên
+                          <Plus size={18} className="mr-1 inline" />Thêm học sinh
                         </button>
                       } />
                   ) : sessions.length === 0 ? (
@@ -1082,7 +1146,7 @@ export default function VioEduApp() {
                               <span className="min-w-0">
                                 <span className={`block truncate font-bold ${active ? "text-indigo-800" : ""}`}>{g.name}</span>
                                 <span className={`block text-xs ${active ? "text-indigo-500" : "text-slate-500"}`}>
-                                  {memberCounts[g.id] ?? 0} thành viên
+                                  {memberCounts[g.id] ?? 0} học sinh
                                 </span>
                               </span>
                             </button>
@@ -1129,42 +1193,23 @@ export default function VioEduApp() {
 
       {/* --- sheets ---------------------------------------------------- */}
       <Sheet open={showGroupPicker} title="Chọn nhóm" onClose={() => setShowGroupPicker(false)}>
+        {/* Chỉ chọn nhóm đang xem. Tạo, đổi tên và xóa nhóm nằm ở Cài đặt, để
+            một thao tác không có mặt ở hai màn. */}
         <div className="space-y-1">
-          {/* Mỗi hàng gồm nút chọn nhóm và hai nút thao tác. Dùng nút hiện sẵn
-              chứ không dùng menu bật ra, vì thân Sheet cuộn được và sẽ cắt mất
-              phần menu tràn ra ngoài. */}
           {groups.map((g) => (
-            <div key={g.id}
-              className={`flex min-h-[56px] items-center gap-1 rounded-2xl pr-1 transition ${g.id === groupId ? "bg-indigo-50 text-indigo-700" : "hover:bg-slate-100"}`}>
-              <button onClick={() => { setGroupId(g.id); setShowGroupPicker(false); }}
-                className="flex min-h-[56px] min-w-0 flex-1 items-center gap-3 rounded-2xl px-3 py-2 text-left">
-                <Check size={18} className={`shrink-0 ${g.id === groupId ? "" : "invisible"}`} />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate font-bold">{g.name}</span>
-                  <span className={`block text-xs ${g.id === groupId ? "text-indigo-500" : "text-slate-500"}`}>
-                    {memberCounts[g.id] ?? 0} thành viên
-                  </span>
+            <button key={g.id} onClick={() => { setGroupId(g.id); setShowGroupPicker(false); }}
+              className={`flex min-h-[56px] w-full items-center gap-3 rounded-2xl px-3 py-2 text-left transition ${g.id === groupId ? "bg-indigo-50 text-indigo-700" : "hover:bg-slate-100"}`}>
+              <Check size={18} className={`shrink-0 ${g.id === groupId ? "" : "invisible"}`} />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-bold">{g.name}</span>
+                <span className={`block text-xs ${g.id === groupId ? "text-indigo-500" : "text-slate-500"}`}>
+                  {memberCounts[g.id] ?? 0} học sinh
                 </span>
-              </button>
-              <button onClick={() => { setShowGroupPicker(false); setGroupForm({ mode: "rename", id: g.id, name: g.name }); }}
-                aria-label={`Đổi tên nhóm ${g.name}`}
-                className="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-slate-400 transition hover:bg-white hover:text-slate-700">
-                <Pencil size={17} />
-              </button>
-              {/* Đóng Sheet trước khi mở hộp xác nhận, để màn hình không chồng hai lớp nền mờ. */}
-              <button onClick={() => { setShowGroupPicker(false); askDeleteGroup(g); }}
-                aria-label={`Xóa nhóm ${g.name}`}
-                className="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-slate-400 transition hover:bg-red-50 hover:text-red-600">
-                <Trash2 size={17} />
-              </button>
-            </div>
+              </span>
+            </button>
           ))}
         </div>
-        <div className="my-3 h-px bg-slate-200" />
-        <button onClick={() => { setShowGroupPicker(false); setGroupForm({ mode: "create", name: "" }); }}
-          className="flex min-h-[52px] w-full items-center gap-3 rounded-2xl border border-dashed border-slate-300 px-3 font-bold text-indigo-600 transition hover:bg-indigo-50">
-          <Plus size={18} />Tạo nhóm mới
-        </button>
+        <p className="mt-4 text-center text-xs text-slate-500">Tạo, đổi tên hay xóa nhóm ở tab Cài đặt.</p>
       </Sheet>
 
       <Sheet open={!!groupForm} title={groupForm?.mode === "rename" ? "Đổi tên nhóm" : "Bước 1 · Tạo nhóm mới"} onClose={() => setGroupForm(null)}>
@@ -1179,11 +1224,11 @@ export default function VioEduApp() {
       </Sheet>
 
       <Sheet open={!!memberForm}
-        title={memberForm?.id ? "Đổi tên thành viên" : memberForm?.step2 ? "Bước 2 · Thêm thành viên" : "Thêm thành viên"}
+        title={memberForm?.id ? "Đổi tên học sinh" : memberForm?.step2 ? "Bước 2 · Thêm học sinh" : "Thêm học sinh"}
         onClose={() => setMemberForm(null)}>
         {memberForm?.step2 && (
           <p className="mb-4 rounded-2xl bg-indigo-50 px-3 py-3 text-sm text-indigo-800">
-            Đã tạo nhóm <b>{currentGroup?.name}</b>. Thêm thành viên cho nhóm, hoặc đóng để làm sau.
+            Đã tạo nhóm <b>{currentGroup?.name}</b>. Thêm học sinh cho nhóm, hoặc đóng để làm sau.
           </p>
         )}
         {!memberForm?.id && !memberForm?.account && studentOptions.length > 0 && (
@@ -1304,14 +1349,14 @@ export default function VioEduApp() {
             placeholder="Nhập tên học sinh" />
         </label>
         <button disabled={busy || !memberForm?.name.trim()} onClick={submitMember} className={`mt-5 ${primaryBtn}`}>
-          {busy ? "Đang lưu..." : memberForm?.id ? "Lưu tên" : "Thêm thành viên"}
+          {busy ? "Đang lưu..." : memberForm?.id ? "Lưu tên" : "Thêm học sinh"}
         </button>
       </Sheet>
 
       <Sheet open={!!scheduleForm} title={scheduleForm?.id ? "Sửa lịch học" : "Thêm lịch học"} onClose={() => setScheduleForm(null)}>
         <div className="space-y-4">
           <label className="block">
-            <span className="text-sm font-bold">Thành viên</span>
+            <span className="text-sm font-bold">Học sinh</span>
             <select value={scheduleForm?.memberId ?? ""} onChange={(e) => setScheduleForm((f) => (f ? { ...f, memberId: e.target.value } : f))} className={`mt-1 ${field}`}>
               {members.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
             </select>
@@ -1338,7 +1383,117 @@ export default function VioEduApp() {
         <button disabled={busy || !scheduleForm?.memberId} onClick={submitSchedule} className={`mt-5 ${primaryBtn}`}>
           {busy ? "Đang lưu..." : "Lưu lịch học"}
         </button>
-        {members.length === 0 && <p className="mt-2 text-center text-xs text-slate-500">Nhóm chưa có thành viên nào.</p>}
+        {members.length === 0 && <p className="mt-2 text-center text-xs text-slate-500">Nhóm chưa có học sinh nào.</p>}
+      </Sheet>
+
+      {/* Chi tiết học sinh: mở từ chính thẻ học sinh, khóa theo id của hàng
+          group_members chứ không theo tên. */}
+      <Sheet open={!!studentDetail} title={studentDetail?.name ?? ""} onClose={() => setStudentDetail(null)}>
+        {studentDetail && (() => {
+          const own = sessions.filter((x) => x.memberId === studentDetail.id);
+          const done = own.filter((x) => x.done).length;
+          const account = studentDetail.user_id ? profiles.find((x) => x.id === studentDetail.user_id) : undefined;
+          return (
+            <div className="space-y-4">
+              <div className="flex items-center gap-3 rounded-2xl bg-slate-50 p-3">
+                <span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-indigo-50 text-lg font-extrabold text-indigo-700">
+                  {studentDetail.name.trim().charAt(0).toUpperCase() || "?"}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <b className="block truncate">{studentDetail.name}</b>
+                  <span className="block truncate text-xs text-slate-500">
+                    {account?.email ?? "Chưa gắn tài khoản"} · {currentGroup?.name}
+                  </span>
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 text-center">
+                <div className="rounded-2xl bg-white p-3 shadow-sm">
+                  <p className="text-2xl font-extrabold text-indigo-700">{done}</p>
+                  <p className="text-xs text-slate-500">buổi hoàn thành</p>
+                </div>
+                <div className="rounded-2xl bg-white p-3 shadow-sm">
+                  <p className="text-2xl font-extrabold text-slate-700">{own.length}</p>
+                  <p className="text-xs text-slate-500">buổi đã lên lịch</p>
+                </div>
+              </div>
+
+              <div>
+                <p className="mb-2 text-sm font-bold">Lịch học</p>
+                {own.length === 0 ? (
+                  <p className="rounded-2xl bg-slate-50 px-3 py-3 text-sm text-slate-500">Chưa có buổi học nào trong nhóm này.</p>
+                ) : (
+                  <div className="max-h-56 space-y-1 overflow-y-auto">
+                    {own.map((x) => (
+                      <div key={x.id} className="flex items-center gap-2 rounded-2xl bg-slate-50 px-3 py-2 text-sm">
+                        <Clock3 size={15} className="shrink-0 text-slate-400" />
+                        <span className="min-w-0 flex-1 truncate">{dateLabel(new Date(x.date))} · {fmt12(x.time)}</span>
+                        {x.done && <Check size={16} className="shrink-0 text-emerald-600" />}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-2 border-t border-slate-200 pt-4">
+                <button onClick={() => { setStudentDetail(null); setMemberForm({ id: studentDetail.id, name: studentDetail.name }); }}
+                  className="flex min-h-[48px] w-full items-center gap-2 rounded-2xl bg-slate-100 px-4 font-bold text-slate-700 transition hover:bg-slate-200">
+                  <Pencil size={16} />Sửa thông tin
+                </button>
+                <button onClick={() => openMove(studentDetail)} disabled={groups.length < 2}
+                  className="flex min-h-[48px] w-full items-center gap-2 rounded-2xl bg-slate-100 px-4 font-bold text-slate-700 transition hover:bg-slate-200 disabled:opacity-50">
+                  <UsersRound size={16} />Chuyển nhóm
+                </button>
+                <button onClick={() => { setStudentDetail(null); askDeleteMember(studentDetail); }}
+                  className="flex min-h-[48px] w-full items-center gap-2 rounded-2xl bg-red-50 px-4 font-bold text-red-600 transition hover:bg-red-100">
+                  <Trash2 size={16} />Xóa học sinh
+                </button>
+              </div>
+            </div>
+          );
+        })()}
+      </Sheet>
+
+      <Sheet open={!!moveForm} title={`Chuyển ${moveForm?.member.name ?? ""}`} onClose={() => setMoveForm(null)}>
+        <label className="block">
+          <span className="text-sm font-bold">Nhóm nhận</span>
+          <select value={moveForm?.targetId ?? ""} onChange={(e) => setMoveForm((f) => (f ? { ...f, targetId: e.target.value } : f))}
+            className={`mt-1 ${field}`}>
+            {groups.filter((g) => g.id !== groupId).map((g) => (
+              <option key={g.id} value={g.id}>{g.name}</option>
+            ))}
+          </select>
+        </label>
+        <p className="mt-3 text-sm text-slate-500">
+          Lịch học của học sinh này được chuyển sang nhóm mới cùng với học sinh, không bị xóa.
+        </p>
+        <button disabled={busy || !moveForm?.targetId} onClick={submitMove} className={`mt-5 ${primaryBtn}`}>
+          {busy ? "Đang chuyển..." : "Chuyển nhóm"}
+        </button>
+      </Sheet>
+
+      <Sheet open={!!groupDelete} title={`Xóa nhóm "${groupDelete?.group.name ?? ""}"`} onClose={() => setGroupDelete(null)}>
+        <p className="text-sm leading-relaxed text-slate-600">
+          Nhóm này còn <b>{memberCounts[groupDelete?.group.id ?? ""] ?? 0} học sinh</b>. Hãy chọn cách xử lý trước khi xóa.
+        </p>
+        <label className="mt-4 block">
+          <span className="text-sm font-bold">Chuyển học sinh sang nhóm</span>
+          <select value={groupDelete?.targetId ?? ""} onChange={(e) => setGroupDelete((f) => (f ? { ...f, targetId: e.target.value } : f))}
+            className={`mt-1 ${field}`}>
+            {groups.filter((g) => g.id !== groupDelete?.group.id).map((g) => (
+              <option key={g.id} value={g.id}>{g.name}</option>
+            ))}
+          </select>
+        </label>
+        <button disabled={busy || !groupDelete?.targetId} onClick={moveAllThenDelete} className={`mt-4 ${primaryBtn}`}>
+          {busy ? "Đang chuyển..." : "Chuyển học sinh rồi xóa nhóm"}
+        </button>
+        <div className="my-4 h-px bg-slate-200" />
+        <button disabled={busy}
+          onClick={() => { const g = groupDelete!.group; setGroupDelete(null); confirmDeleteGroup(g); }}
+          className="min-h-[48px] w-full rounded-2xl bg-red-50 px-4 font-bold text-red-600 transition hover:bg-red-100 disabled:opacity-50">
+          Xóa nhóm cùng toàn bộ học sinh
+        </button>
       </Sheet>
 
       <ConfirmDialog state={confirm} busy={confirmBusy} onClose={() => { if (!confirmBusy) setConfirm(null); }} />

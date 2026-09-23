@@ -24,7 +24,7 @@ export default function DataDeletionPage() {
           items={[
             "Tài khoản đăng nhập của bạn trong ứng dụng.",
             <>Các nhóm bạn đã tạo (<code className="rounded bg-slate-100 px-1 text-[13px]">groups</code>).</>,
-            <>Thành viên trong các nhóm đó (<code className="rounded bg-slate-100 px-1 text-[13px]">group_members</code>).</>,
+            <>Học sinh trong các nhóm đó (<code className="rounded bg-slate-100 px-1 text-[13px]">group_members</code>).</>,
             <>Lịch học đã tạo (<code className="rounded bg-slate-100 px-1 text-[13px]">schedules</code>).</>,
             "Thông tin hồ sơ cơ bản nhận từ nhà cung cấp đăng nhập, ví dụ email, tên hiển thị và ảnh đại diện.",
           ]}
@@ -41,8 +41,8 @@ export default function DataDeletionPage() {
             <>Đăng nhập vào {APP_NAME}.</>,
             <>
               Vào tab <b>Cài đặt</b>. Trong mục <b>Nhóm của tôi</b>, mở menu <b>⋮</b> ở nhóm bạn muốn
-              xóa rồi chọn <b>Xóa nhóm</b>. Thao tác này xóa luôn toàn bộ thành viên và lịch học thuộc
-              nhóm đó. Bạn cũng có thể xóa từng thành viên ở tab <b>Thành viên</b>, hoặc từng buổi học
+              xóa rồi chọn <b>Xóa nhóm</b>. Thao tác này xóa luôn toàn bộ học sinh và lịch học thuộc
+              nhóm đó. Bạn cũng có thể xóa từng học sinh ở tab <b>Học sinh</b>, hoặc từng buổi học
               ở tab <b>Lịch</b>.
             </>,
             <>
@@ -52,7 +52,7 @@ export default function DataDeletionPage() {
           ]}
         />
         <p className="rounded-2xl bg-slate-100 p-4 text-sm">
-          Lưu ý: xóa nhóm, thành viên hay lịch học là thao tác <b>không thể hoàn tác</b>. Ứng dụng
+          Lưu ý: xóa nhóm, học sinh hay lịch học là thao tác <b>không thể hoàn tác</b>. Ứng dụng
           không có thùng rác và không giữ bản sao lưu để khôi phục cho từng người dùng.
         </p>
       </Section>

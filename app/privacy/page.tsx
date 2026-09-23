@@ -19,7 +19,7 @@ export default function PrivacyPage() {
       <Section title="1. Giới thiệu">
         <p>
           {APP_NAME} là ứng dụng giúp bạn quản lý lịch học theo nhóm. Trong ứng dụng, bạn có thể tạo
-          nhóm, thêm thành viên vào nhóm, lên lịch học cho từng thành viên và đánh dấu buổi học đã
+          nhóm, thêm học sinh vào nhóm, lên lịch học cho từng học sinh và đánh dấu buổi học đã
           hoàn thành.
         </p>
         <p>
@@ -69,7 +69,7 @@ export default function PrivacyPage() {
         <Bullets
           items={[
             "Tên nhóm.",
-            "Tên thành viên trong nhóm.",
+            "Tên học sinh trong nhóm.",
             "Lịch học: ngày, giờ bắt đầu và thời lượng.",
             "Trạng thái hoàn thành của từng buổi học.",
           ]}
@@ -84,7 +84,7 @@ export default function PrivacyPage() {
         <Bullets
           items={[
             "Xác thực và giữ bạn đăng nhập.",
-            "Hiển thị danh sách nhóm và thành viên của bạn.",
+            "Hiển thị danh sách nhóm và học sinh của bạn.",
             "Lưu và đồng bộ lịch học giữa các thiết bị dùng cùng tài khoản.",
             "Tính và hiển thị tiến độ hoàn thành.",
           ]}
@@ -142,7 +142,7 @@ export default function PrivacyPage() {
       <Section title="9. Quyền của bạn">
         <Bullets
           items={[
-            "Xem, sửa và xóa nhóm, thành viên, lịch học của mình ngay trong ứng dụng.",
+            "Xem, sửa và xóa nhóm, học sinh, lịch học của mình ngay trong ứng dụng.",
             "Đăng xuất khỏi thiết bị bất kỳ lúc nào trong phần Cài đặt.",
             "Yêu cầu xóa dữ liệu và tài khoản.",
             "Ngừng sử dụng ứng dụng bất kỳ lúc nào.",
@@ -171,7 +171,7 @@ export default function PrivacyPage() {
           chứ không dành cho trẻ em tự đăng ký tài khoản.
         </p>
         <p>
-          Tên thành viên trong nhóm do <b>người quản lý tài khoản tự nhập</b>. Người quản lý tài khoản
+          Tên học sinh trong nhóm do <b>người quản lý tài khoản tự nhập</b>. Người quản lý tài khoản
           chịu trách nhiệm về việc nhập những dữ liệu này và về việc có quyền nhập chúng hay không.
         </p>
         <p>

@@ -4,7 +4,7 @@ export default function manifest(): MetadataRoute.Manifest {
   return {
     name: "VioEdu",
     short_name: "VioEdu",
-    description: "Quản lý lịch học theo nhóm và thành viên",
+    description: "Quản lý lịch học theo nhóm và học sinh",
     start_url: "/",
     display: "standalone",
     background_color: "#f5f7fb",

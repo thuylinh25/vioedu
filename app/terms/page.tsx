@@ -27,7 +27,7 @@ export default function TermsPage() {
 
       <Section title="2. Dịch vụ là gì">
         <p>
-          {APP_NAME} là ứng dụng giúp bạn quản lý lịch học theo nhóm: tạo nhóm, thêm thành viên, lên
+          {APP_NAME} là ứng dụng giúp bạn quản lý lịch học theo nhóm: tạo nhóm, thêm học sinh, lên
           lịch học và đánh dấu buổi học đã hoàn thành.
         </p>
         <p>
@@ -54,7 +54,7 @@ export default function TermsPage() {
 
       <Section title="4. Nội dung bạn nhập vào ứng dụng">
         <p>
-          Bạn tự nhập tên nhóm, tên thành viên và lịch học. Những dữ liệu này thuộc về bạn, và bạn có
+          Bạn tự nhập tên nhóm, tên học sinh và lịch học. Những dữ liệu này thuộc về bạn, và bạn có
           thể sửa hoặc xóa bất kỳ lúc nào trong ứng dụng.
         </p>
         <p>
@@ -101,7 +101,7 @@ export default function TermsPage() {
 
       <Section title="7. Sao lưu dữ liệu">
         <p>
-          Thao tác xóa nhóm, thành viên hoặc lịch học là <b>không thể hoàn tác</b>. Ứng dụng không có
+          Thao tác xóa nhóm, học sinh hoặc lịch học là <b>không thể hoàn tác</b>. Ứng dụng không có
           thùng rác và không cung cấp dịch vụ khôi phục dữ liệu cho từng người dùng.
         </p>
         <p>
