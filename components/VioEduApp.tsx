@@ -642,22 +642,6 @@ export default function VioEduApp() {
     setStudentDetail(selfMember);
   };
 
-  /** Gắn hồ sơ học sinh với một tài khoản, hoặc bỏ gắn khi truyền chuỗi rỗng.
-   *  Gắn được cho bất kỳ ai chứ không riêng người đang đăng nhập, vì người lập
-   *  nhóm mới là người biết em nào dùng tài khoản nào. */
-  const linkStudentAccount = async (m: Member, accountId: string) => {
-    if (!supabase || busy) return;
-    setBusy(true);
-    const next = accountId || null;
-    const { error } = await supabase.from("group_members").update({ user_id: next }).eq("id", m.id);
-    setBusy(false);
-    if (error) { toast(error.message, "err"); return; }
-    setMembers((v) => v.map((x) => (x.id === m.id ? { ...x, user_id: next } : x)));
-    setStudentDetail((d) => (d && d.id === m.id ? { ...d, user_id: next } : d));
-    await loadMemberIndex();
-    toast(next ? `Đã gắn tài khoản cho ${m.name}` : `Đã bỏ liên kết tài khoản khỏi ${m.name}`);
-  };
-
   const openMove = (m: Member) => {
     setStudentDetail(null);
     setMoveForm({ member: m, targetId: groups.find((g) => g.id !== groupId)?.id ?? "" });
@@ -1417,6 +1401,11 @@ export default function VioEduApp() {
                   <button onClick={logout} className="flex min-h-[48px] w-full items-center justify-center gap-2 rounded-2xl bg-red-50 font-bold text-red-600 transition hover:bg-red-100">
                     <LogOut size={17} />Đăng xuất thiết bị này
                   </button>
+
+                  {/* Mã bản dựng: để biết máy đang chạy bản nào thay vì đoán qua giao diện. */}
+                  <p className="pt-1 text-center text-[11px] text-slate-400">
+                    Phiên bản {process.env.NEXT_PUBLIC_BUILD_SHA}
+                  </p>
                 </div>
               )}
             </>
@@ -1618,21 +1607,6 @@ export default function VioEduApp() {
                   </span>
                 </span>
               </div>
-
-              {linkSupported && (
-                <label className="block">
-                  <span className="text-sm font-bold">Tài khoản đăng nhập</span>
-                  {/* Một tài khoản đại diện một học sinh, nên tài khoản đã gắn cho
-                      em khác không xuất hiện ở đây. */}
-                  <select disabled={busy} value={studentDetail.user_id ?? ""} className={`mt-1 ${field}`}
-                    onChange={(e) => void linkStudentAccount(studentDetail, e.target.value)}>
-                    <option value="">Chưa gắn tài khoản</option>
-                    {profiles
-                      .filter((x) => x.id === studentDetail.user_id || !studentNames[x.id])
-                      .map((x) => <option key={x.id} value={x.id}>{x.email ?? x.id}</option>)}
-                  </select>
-                </label>
-              )}
 
               <div className="grid grid-cols-2 gap-2 text-center">
                 <div className="rounded-2xl bg-white p-3 shadow-sm">
