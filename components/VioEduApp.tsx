@@ -2,7 +2,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight, Clock3, ExternalLink,
-  Eye, EyeOff, Home, LogOut, Pencil, Plus, Settings, Trash2, UsersRound, WifiOff,
+  Eye, EyeOff, Home, LogOut, Pencil, Plus, Settings, Trash2, User, UsersRound, WifiOff,
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { supabase } from "../lib-supabase-client";
@@ -64,6 +64,8 @@ const TABS: { id: Tab; icon: typeof Home; label: string }[] = [
 ];
 const TAB_TITLE: Record<Tab, string> = { home: "Lịch học", people: "Học sinh", stats: "Tiến độ", settings: "Cài đặt" };
 const DURATIONS = [20, 30, 45, 60, 90];
+/** Trang VioEdu mở ra từ menu tài khoản và từ nút "Học ngay". */
+const VIOEDU_URL = "https://vio.edu.vn/";
 /** New schedules open at 07:00, so the picker shows AM by default. */
 const DEFAULT_TIME = "07:00";
 const SCHEDULE_COLS = "id,student_name,study_date,start_time,duration,done,member_id,group_members(name)";
@@ -73,6 +75,25 @@ const MEMBER_COLS_LEGACY = "id,group_id,name";
 
 const field = "w-full rounded-2xl border border-slate-200 bg-white p-3 text-slate-900 outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100";
 const primaryBtn = "min-h-[48px] w-full rounded-2xl bg-indigo-600 px-4 font-bold text-white transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50";
+
+/** Ảnh đại diện tài khoản. Kích thước do lớp cha quyết định, nên cùng một
+ *  component dùng được cho cả nút trên header lẫn hàng trong menu. */
+function AccountAvatar({ name, email, avatar, broken, onBroken, className = "" }: {
+  name: string; email: string; avatar: string;
+  broken: boolean; onBroken: () => void; className?: string;
+}) {
+  const initial = (name || email).trim().charAt(0).toUpperCase();
+  const box = `shrink-0 overflow-hidden rounded-full ${className}`;
+  if (avatar && !broken) {
+    // eslint-disable-next-line @next/next/no-img-element
+    return <img src={avatar} alt="" onError={onBroken} className={`${box} object-cover`} />;
+  }
+  return (
+    <span className={`${box} grid place-items-center bg-white/25 font-extrabold text-white`}>
+      {initial || <User size={18} />}
+    </span>
+  );
+}
 
 /** Hour / minute / AM-PM selects. AM is always listed before PM, unlike the
  *  browser's native time input where the order follows the current value. */
@@ -143,6 +164,9 @@ export default function VioEduApp() {
   const [busy, setBusy] = useState(false);
 
   const [showGroupPicker, setShowGroupPicker] = useState(false);
+  const [showAccount, setShowAccount] = useState(false);
+  /** Ảnh đại diện có thể hỏng link; khi đó quay về chữ cái đầu. */
+  const [avatarBroken, setAvatarBroken] = useState(false);
   const [studentDetail, setStudentDetail] = useState<Member | null>(null);
   const [moveForm, setMoveForm] = useState<{ member: Member; targetId: string } | null>(null);
   const [groupDelete, setGroupDelete] = useState<{ group: Group; targetId: string } | null>(null);
@@ -849,11 +873,13 @@ export default function VioEduApp() {
               )}
             </div>
             {tab === "home" && (
-              <a href="https://vio.edu.vn/" target="_blank" rel="noopener noreferrer" aria-label="Mở VioEdu"
-                 className="flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-2xl bg-white/15 px-3 transition hover:bg-white/25">
-                <span className="hidden text-sm font-bold sm:inline">VioEdu</span>
-                <ExternalLink size={20} />
-              </a>
+              <button onClick={() => setShowAccount(true)} aria-haspopup="dialog"
+                aria-label={`Tài khoản ${userName || userEmail}`}
+                className="grid h-11 w-11 shrink-0 place-items-center rounded-full transition hover:bg-white/15">
+                <AccountAvatar name={userName} email={userEmail} avatar={userAvatar}
+                  broken={avatarBroken} onBroken={() => setAvatarBroken(true)}
+                  className="h-10 w-10 ring-2 ring-white/40" />
+              </button>
             )}
           </div>
 
@@ -1022,7 +1048,7 @@ export default function VioEduApp() {
                               className={`flex min-h-[44px] flex-1 items-center justify-center gap-1 rounded-2xl text-xs font-bold transition ${x.done ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}`}>
                               <Check size={15} />{x.done ? "Đã học" : "Hoàn thành"}
                             </button>
-                            <a href="https://vio.edu.vn/" target="_blank" rel="noopener noreferrer"
+                            <a href={VIOEDU_URL} target="_blank" rel="noopener noreferrer"
                               className="grid min-h-[44px] place-items-center rounded-2xl bg-indigo-600 px-4 text-sm font-bold text-white transition hover:bg-indigo-700">
                               Học ngay
                             </a>
@@ -1258,6 +1284,33 @@ export default function VioEduApp() {
       </div>
 
       {/* --- sheets ---------------------------------------------------- */}
+      <Sheet open={showAccount} title="Tài khoản" onClose={() => setShowAccount(false)}>
+        <div className="flex items-center gap-3 rounded-2xl bg-slate-50 p-3">
+          <AccountAvatar name={userName} email={userEmail} avatar={userAvatar}
+            broken={avatarBroken} onBroken={() => setAvatarBroken(true)}
+            className="h-12 w-12 bg-indigo-100 text-indigo-700" />
+          <span className="min-w-0 flex-1">
+            <b className="block truncate">{userName || userEmail}</b>
+            <span className="block truncate text-xs text-slate-500">{userEmail}</span>
+          </span>
+        </div>
+        <div className="my-3 h-px bg-slate-200" />
+        <div className="space-y-1">
+          <button onClick={() => { setShowAccount(false); setTab("settings"); }}
+            className="flex min-h-[52px] w-full items-center gap-3 rounded-2xl px-3 font-bold text-slate-700 transition hover:bg-slate-100">
+            <Settings size={18} className="text-slate-400" />Cài đặt
+          </button>
+          <a href={VIOEDU_URL} target="_blank" rel="noopener noreferrer" onClick={() => setShowAccount(false)}
+            className="flex min-h-[52px] w-full items-center gap-3 rounded-2xl px-3 font-bold text-slate-700 transition hover:bg-slate-100">
+            <ExternalLink size={18} className="text-slate-400" />Mở VioEdu
+          </a>
+          <button onClick={() => { setShowAccount(false); void logout(); }}
+            className="flex min-h-[52px] w-full items-center gap-3 rounded-2xl px-3 font-bold text-red-600 transition hover:bg-red-50">
+            <LogOut size={18} />Đăng xuất
+          </button>
+        </div>
+      </Sheet>
+
       <Sheet open={showGroupPicker} title="Chọn nhóm" onClose={() => setShowGroupPicker(false)}>
         {/* Chỉ chọn nhóm đang xem. Tạo, đổi tên và xóa nhóm nằm ở Cài đặt, để
             một thao tác không có mặt ở hai màn. */}
