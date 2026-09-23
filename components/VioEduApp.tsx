@@ -119,6 +119,8 @@ export default function VioEduApp() {
   const [members, setMembers] = useState<Member[]>([]);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [profilesError, setProfilesError] = useState("");
+  /** user_id → tên học sinh mà tài khoản đó đang mang trong các nhóm. */
+  const [studentNames, setStudentNames] = useState<Record<string, string>>({});
   const [sessions, setSessions] = useState<Session[]>([]);
   const [memberCounts, setMemberCounts] = useState<Record<string, number>>({});
   const [groupsLoading, setGroupsLoading] = useState(true);
@@ -161,6 +163,8 @@ export default function VioEduApp() {
   const selfProfile: Profile = { id: userId, email: userEmail || null, full_name: userName || null, avatar_url: userAvatar || null };
   const selfIsMember = takenUserIds.has(userId) || takenNames.has(profileName(selfProfile).toLowerCase());
   const otherProfiles = availableProfiles.filter((p) => p.id !== userId);
+  /** Tên để hiện cho một tài khoản: tên học sinh nếu đã biết, nếu chưa thì tên tài khoản. */
+  const accountLabel = (prof: Profile) => studentNames[prof.id]?.trim() || profileName(prof);
   const accountOptions = [
     ...(selfIsMember ? [] : [profiles.find((p) => p.id === userId) ?? selfProfile]),
     ...otherProfiles,
@@ -188,11 +192,19 @@ export default function VioEduApp() {
     const list = (data ?? []) as Group[];
     setGroups(list);
     setGroupId((prev) => (prev && list.some((g) => g.id === prev) ? prev : list[0]?.id ?? ""));
-    const counts = await supabase.from("group_members").select("group_id");
+    type Tally = { group_id: string; name?: string; user_id?: string | null };
+    let counts = await supabase.from("group_members").select("group_id,name,user_id");
+    // Cột user_id chưa có thì vẫn đếm được thành viên, chỉ không biết tên học sinh.
+    if (counts.error) counts = await supabase.from("group_members").select("group_id");
     if (!counts.error) {
       const tally: Record<string, number> = {};
-      for (const row of counts.data ?? []) tally[(row as { group_id: string }).group_id] = (tally[(row as { group_id: string }).group_id] ?? 0) + 1;
+      const names: Record<string, string> = {};
+      for (const row of (counts.data ?? []) as Tally[]) {
+        tally[row.group_id] = (tally[row.group_id] ?? 0) + 1;
+        if (row.user_id && row.name) names[row.user_id] = row.name;
+      }
       setMemberCounts(tally);
+      setStudentNames(names);
     }
   }, []);
 
@@ -270,7 +282,7 @@ export default function VioEduApp() {
       if (loadedUser.current === (u?.id ?? null)) return;
       loadedUser.current = u?.id ?? null;
       if (u) { void loadGroups(); void loadProfiles(); }
-      else { setGroups([]); setGroupId(""); setMembers([]); setSessions([]); setProfiles([]); setProfilesError(""); setGroupsLoading(false); }
+      else { setGroups([]); setGroupId(""); setMembers([]); setSessions([]); setProfiles([]); setProfilesError(""); setStudentNames({}); setGroupsLoading(false); }
     };
     supabase.auth.getSession().then(({ data }) => apply(data.session));
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
@@ -407,6 +419,8 @@ export default function VioEduApp() {
       const { error } = await supabase.from("group_members").update({ name }).eq("id", editingId);
       setBusy(false);
       if (error) { toast(error.message, "err"); return; }
+      const linked = members.find((m) => m.id === editingId)?.user_id;
+      if (linked) setStudentNames((n) => ({ ...n, [linked]: name }));
       setMembers((v) => v.map((m) => (m.id === editingId ? { ...m, name } : m)));
       setSessions((v) => v.map((s) => (s.memberId === editingId ? { ...s, memberName: name } : s)));
       toast("Đã đổi tên thành viên");
@@ -420,6 +434,7 @@ export default function VioEduApp() {
       if (error) { toast(error.message, "err"); return; }
       setMembers((v) => [...v, data as unknown as Member]);
       setMemberCounts((c) => ({ ...c, [groupId]: (c[groupId] ?? 0) + 1 }));
+      if (memberForm.account) setStudentNames((n) => ({ ...n, [memberForm.account!.id]: name }));
       toast(`Đã thêm ${name}`);
     }
     setMemberForm(null);
@@ -1153,11 +1168,11 @@ export default function VioEduApp() {
                   <img src={memberForm.account.avatar_url} alt="" className="h-10 w-10 shrink-0 rounded-2xl object-cover" />
                 ) : (
                   <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-white text-base font-extrabold text-indigo-700">
-                    {profileName(memberForm.account).charAt(0).toUpperCase()}
+                    {accountLabel(memberForm.account).charAt(0).toUpperCase()}
                   </span>
                 )}
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate font-bold text-indigo-900">{profileName(memberForm.account)}</span>
+                  <span className="block truncate font-bold text-indigo-900">{accountLabel(memberForm.account)}</span>
                   <span className="block truncate text-xs text-indigo-500">{memberForm.account.email}</span>
                 </span>
                 <button onClick={() => setMemberForm((f) => (f ? { ...f, account: undefined } : f))}
@@ -1182,21 +1197,25 @@ export default function VioEduApp() {
               ) : (
                 <div className="space-y-1">
                   {accountOptions.map((prof) => (
-                    <button key={prof.id} onClick={() => setMemberForm((f) => (f ? { ...f, account: prof } : f))}
+                    <button key={prof.id}
+                      onClick={() => setMemberForm((f) => (f ? { ...f, account: prof, name: f.name.trim() || studentNames[prof.id] || "" } : f))}
                       className="flex min-h-[56px] w-full items-center gap-3 rounded-2xl px-2 py-2 text-left transition hover:bg-slate-100">
                       {prof.avatar_url ? (
                         // eslint-disable-next-line @next/next/no-img-element
                         <img src={prof.avatar_url} alt="" className="h-10 w-10 shrink-0 rounded-2xl object-cover" />
                       ) : (
                         <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-indigo-50 text-base font-extrabold text-indigo-700">
-                          {profileName(prof).charAt(0).toUpperCase()}
+                          {accountLabel(prof).charAt(0).toUpperCase()}
                         </span>
                       )}
                       <span className="min-w-0 flex-1">
                         <span className="flex items-center gap-2">
-                          <span className="min-w-0 truncate font-bold">{profileName(prof)}</span>
+                          <span className="min-w-0 truncate font-bold">{accountLabel(prof)}</span>
                           {prof.id === userId && (
                             <span className="shrink-0 rounded-full bg-indigo-100 px-2 py-0.5 text-[11px] font-bold text-indigo-700">Bạn</span>
+                          )}
+                          {!studentNames[prof.id] && (
+                            <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-500">chưa đặt tên</span>
                           )}
                         </span>
                         <span className="block truncate text-xs text-slate-500">{prof.email}</span>
