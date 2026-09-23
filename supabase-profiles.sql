@@ -98,5 +98,8 @@ end $$;
 create policy "read_all" on public.profiles
   for select to authenticated using (true);
 
-create policy "write_own" on public.profiles
-  for update to authenticated using (id = auth.uid()) with check (id = auth.uid());
+-- Ai đăng nhập cũng sửa được hồ sơ, cùng mô hình dùng chung như các bảng khác.
+-- Cần thiết để người lập nhóm đặt được tên học sinh cho tài khoản của em đó,
+-- và để tên ấy sống sót khi nhóm chứa em bị xóa.
+create policy "write_all" on public.profiles
+  for update to authenticated using (true) with check (true);

@@ -315,6 +315,13 @@ export default function VioEduApp() {
     await loadMemberIndex();
   }, [loadMemberIndex]);
 
+  /** Ghi tên học sinh lên hồ sơ tài khoản. Bỏ qua lỗi: nếu policy chưa cho
+   *  phép thì việc thêm/đổi tên trong nhóm vẫn phải chạy bình thường. */
+  const rememberStudentName = useCallback(async (accountId: string | null | undefined, name: string) => {
+    if (!supabase || !accountId || !name.trim()) return;
+    await supabase.from("profiles").update({ full_name: name.trim() }).eq("id", accountId);
+  }, []);
+
   const loadProfiles = useCallback(async () => {
     if (!supabase) return;
     const { data, error } = await supabase.from("profiles").select("id,email,full_name,avatar_url").order("created_at");
@@ -586,7 +593,7 @@ export default function VioEduApp() {
     if (error) { setOnboardError(error.message); return; }
     // Ghi tên vào chính hồ sơ tài khoản: hàng trong nhóm có thể bị xóa cùng
     // nhóm, còn tài khoản thì không, nên tên vẫn còn để thêm lại sau này.
-    await supabase.from("profiles").update({ full_name: name }).eq("id", userId);
+    await rememberStudentName(userId, name);
     void loadProfiles();
     setGroupStudentNames((n) => ({ ...n, [gid]: [...(n[gid] ?? []), name] }));
     setOnboardDone(true);
@@ -621,6 +628,8 @@ export default function VioEduApp() {
       if (error) { toast(error.message, "err"); return; }
       const linked = members.find((m) => m.id === editingId)?.user_id;
       if (linked) setStudentNames((n) => ({ ...n, [linked]: name }));
+      await rememberStudentName(linked, name);
+      void loadProfiles();
       setMembers((v) => v.map((m) => (m.id === editingId ? { ...m, name } : m)));
       setSessions((v) => v.map((s) => (s.memberId === editingId ? { ...s, memberName: name } : s)));
       toast("Đã đổi tên học sinh");
@@ -645,6 +654,8 @@ export default function VioEduApp() {
     setMembers((v) => [...v, data as unknown as Member]);
     setMemberCounts((c) => ({ ...c, [groupId]: (c[groupId] ?? 0) + 1 }));
     setGroupStudentNames((n) => ({ ...n, [groupId]: [...(n[groupId] ?? []), st.name] }));
+    await rememberStudentName(st.user_id, st.name);
+    void loadProfiles();
     // Chọn xong là xong: đóng luôn để thấy học sinh vừa thêm trong danh sách.
     setMemberForm(null);
     toast(`Đã thêm ${st.name} vào nhóm`);
