@@ -160,8 +160,8 @@ export default function VioEduApp() {
   /** group_id → tên các học sinh trong nhóm, dựng từ chính lần quét của loadGroups. */
   const [groupStudentNames, setGroupStudentNames] = useState<Record<string, string[]>>({});
   const [countsFailed, setCountsFailed] = useState(false);
-  /** Hồ sơ học sinh gắn trực tiếp với tài khoản đang đăng nhập, nếu có. */
-  const [selfMember, setSelfMember] = useState<Member | null>(null);
+  /** Các hồ sơ học sinh gắn trực tiếp với tài khoản đang đăng nhập. */
+  const [selfMembers, setSelfMembers] = useState<Member[]>([]);
   /** false khi cơ sở dữ liệu chưa có group_members.user_id. */
   const [linkSupported, setLinkSupported] = useState(true);
   const [onboardDone, setOnboardDone] = useState(false);
@@ -204,6 +204,10 @@ export default function VioEduApp() {
   const dismissToast = useCallback((id: number) => setToasts((v) => v.filter((t) => t.id !== id)), []);
 
   const currentGroup = groups.find((g) => g.id === groupId) ?? null;
+  // Hồ sơ học sinh của chính tài khoản này, và (các) nhóm chứa nó. Cả lối tắt
+  // trên menu avatar lẫn nhãn "Nhóm của bạn" đều đọc từ đây, nên không thể lệch nhau.
+  const selfMember = selfMembers[0] ?? null;
+  const selfGroupIds = new Set(selfMembers.map((m) => m.group_id));
 
   // Tài khoản chưa có mặt trong nhóm đang mở. Lọc cả theo tên, vì khi cơ sở dữ
   // liệu chưa có cột user_id thì tên là căn cứ duy nhất để tránh thêm trùng.
@@ -245,11 +249,11 @@ export default function VioEduApp() {
     const students = new Map<string, Student>();
     const byGroup: Record<string, string[]> = {};
     // Hồ sơ của chính tài khoản này: khớp theo user_id, không suy từ nhóm hay tên.
-    let mine: Member | null = null;
+    const mine: Member[] = [];
     for (const row of (counts.data ?? []) as Tally[]) {
       tally[row.group_id] = (tally[row.group_id] ?? 0) + 1;
       if (row.id && row.user_id && row.user_id === userId) {
-        mine = { id: row.id, group_id: row.group_id, name: row.name ?? "", user_id: row.user_id };
+        mine.push({ id: row.id, group_id: row.group_id, name: row.name ?? "", user_id: row.user_id });
       }
       if (row.name) (byGroup[row.group_id] ??= []).push(row.name);
       if (row.user_id && row.name) names[row.user_id] = row.name;
@@ -263,7 +267,7 @@ export default function VioEduApp() {
     setStudentNames(names);
     setKnownStudents([...students.values()]);
     setGroupStudentNames(byGroup);
-    setSelfMember(mine);
+    setSelfMembers(mine);
   }, [userId]);
 
   const loadGroups = useCallback(async () => {
@@ -1344,6 +1348,9 @@ export default function VioEduApp() {
                               <span className="min-w-0">
                                 <span className={`block truncate font-bold ${active ? "text-indigo-800" : ""}`}>{g.name}</span>
                                 <span className={`block text-xs ${active ? "text-indigo-500" : "text-slate-500"}`}>
+                                  {/* Nhãn này nói nhóm nào chứa hồ sơ của bạn — khác hẳn dấu ✓,
+                                      vốn chỉ là nhóm đang xem. Hai thứ độc lập nhau. */}
+                                  {selfGroupIds.has(g.id) && <span className="font-bold text-indigo-600">Nhóm của bạn · </span>}
                                   {memberCounts[g.id] ?? 0} học sinh
                                 </span>
                               </span>
