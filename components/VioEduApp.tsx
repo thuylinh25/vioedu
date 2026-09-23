@@ -207,10 +207,10 @@ export default function VioEduApp() {
   // liệu chưa có cột user_id thì tên là căn cứ duy nhất để tránh thêm trùng.
   const takenUserIds = new Set(members.map((m) => m.user_id).filter(Boolean));
   const takenNames = new Set(members.map((m) => m.name.trim().toLowerCase()));
-  // Học sinh đã có tài khoản và chưa thuộc nhóm đang mở. Lọc theo user_id là
-  // chính; lọc thêm theo tên để nhóm không có hai hàng cùng tên.
+  // Mọi học sinh đã có ở đâu đó và chưa thuộc nhóm đang mở, kể cả người chưa
+  // gắn tài khoản: loại họ ra là chặn luôn đường thêm vào nhóm khác.
   const studentOptions = knownStudents.filter(
-    (st) => st.user_id && !takenUserIds.has(st.user_id) && !takenNames.has(st.name.trim().toLowerCase()),
+    (st) => !takenNames.has(st.name.trim().toLowerCase()) && !(st.user_id && takenUserIds.has(st.user_id)),
   );
 
   const mapSchedule = (r: ScheduleRow): Session => ({
@@ -573,10 +573,11 @@ export default function VioEduApp() {
    *  Giữ nguyên tên và user_id của hồ sơ cũ, không hỏi lại tên và không đặt
    *  danh tính mới: chỉ số hàng thành viên của nhóm này tăng thêm một. */
   const addKnownStudent = async (st: Student) => {
-    if (!supabase || !groupId || !st.user_id || linkingId) return; // linkingId chặn bấm hai lần
-    setLinkingId(st.user_id);
+    if (!supabase || !groupId || linkingId) return; // linkingId chặn bấm hai lần
+    const key = st.user_id ?? st.name;
+    setLinkingId(key);
     const row: Record<string, unknown> = { group_id: groupId, name: st.name };
-    if (memberCols.current === MEMBER_COLS) row.user_id = st.user_id;
+    if (st.user_id && memberCols.current === MEMBER_COLS) row.user_id = st.user_id;
     const { data, error } = await supabase.from("group_members").insert(row).select(memberCols.current).single();
     setLinkingId("");
     // Chỉ số liệu trên màn được cập nhật khi máy chủ đã nhận; lỗi thì giữ
@@ -944,16 +945,15 @@ export default function VioEduApp() {
             )}
           </div>
 
+          {/* Lịch bên dưới đã nói rõ đang xem ngày nào, nên thanh này chỉ cần
+              chính ngày đó, đặt giữa hai nút, và thấp hơn một nhịp. */}
           {showDateStrip && (
-            <div className="mt-5 flex items-center justify-between rounded-2xl bg-white/10 p-1.5">
-              <button onClick={() => moveDay(-1)} aria-label="Ngày trước" className="grid h-11 w-11 place-items-center rounded-xl transition hover:bg-white/15">
+            <div className="mt-4 flex items-center justify-between gap-2 rounded-2xl bg-white/10 p-1">
+              <button onClick={() => moveDay(-1)} aria-label="Ngày trước" className="grid h-11 w-11 shrink-0 place-items-center rounded-xl transition hover:bg-white/15">
                 <ChevronLeft />
               </button>
-              <div className="text-center">
-                <p className="text-[11px] text-indigo-200">Ngày đang xem</p>
-                <b>{dateLabel(selectedDate)}</b>
-              </div>
-              <button onClick={() => moveDay(1)} aria-label="Ngày sau" className="grid h-11 w-11 place-items-center rounded-xl transition hover:bg-white/15">
+              <b className="min-w-0 flex-1 truncate text-center">{dateLabel(selectedDate)}</b>
+              <button onClick={() => moveDay(1)} aria-label="Ngày sau" className="grid h-11 w-11 shrink-0 place-items-center rounded-xl transition hover:bg-white/15">
                 <ChevronRight />
               </button>
             </div>
@@ -1420,7 +1420,7 @@ export default function VioEduApp() {
           </>
         ) : (
           <>
-            <p className="text-sm font-bold">Học sinh đã có tài khoản</p>
+            <p className="text-sm font-bold">Học sinh đã có</p>
             <p className="mb-2 mt-0.5 text-xs text-slate-500">Chọn học sinh để liên kết với nhóm này</p>
             {profilesError && (
               <p className="mb-2 rounded-2xl bg-amber-50 px-3 py-3 text-sm text-amber-800">
@@ -1430,7 +1430,7 @@ export default function VioEduApp() {
             )}
             {studentOptions.length === 0 ? (
               <p className="rounded-2xl bg-slate-50 px-3 py-4 text-sm text-slate-500">
-                Chưa có học sinh nào để thêm. Học sinh cần tự đăng nhập và đặt tên của mình, sau đó sẽ hiện ở đây.
+                Chưa có học sinh nào để thêm vào nhóm này. Học sinh xuất hiện ở đây sau khi được tạo ở một nhóm khác, hoặc khi tự đăng nhập và đặt tên của mình.
               </p>
             ) : (
               <div className="space-y-1">
@@ -1442,7 +1442,7 @@ export default function VioEduApp() {
                     </span>
                     <span className="min-w-0 flex-1 truncate font-bold">{st.name}</span>
                     <span className="shrink-0 px-2 text-sm font-bold text-indigo-600">
-                      {linkingId === st.user_id ? "Đang thêm..." : "Thêm"}
+                      {linkingId === (st.user_id ?? st.name) ? "Đang thêm..." : "Thêm"}
                     </span>
                   </button>
                 ))}
