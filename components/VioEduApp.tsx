@@ -160,6 +160,8 @@ export default function VioEduApp() {
   /** group_id → tên các học sinh trong nhóm, dựng từ chính lần quét của loadGroups. */
   const [groupStudentNames, setGroupStudentNames] = useState<Record<string, string[]>>({});
   const [countsFailed, setCountsFailed] = useState(false);
+  /** Hồ sơ học sinh gắn trực tiếp với tài khoản đang đăng nhập, nếu có. */
+  const [selfMember, setSelfMember] = useState<Member | null>(null);
   /** false khi cơ sở dữ liệu chưa có group_members.user_id. */
   const [linkSupported, setLinkSupported] = useState(true);
   const [onboardDone, setOnboardDone] = useState(false);
@@ -224,6 +226,46 @@ export default function VioEduApp() {
   });
 
   // ---- data loading -------------------------------------------------------
+  /** Quét group_members của mọi nhóm: số đếm, tên học sinh theo nhóm, và danh
+   *  sách học sinh đã có. Tách riêng để mở ô "Thêm học sinh" là nạp lại được,
+   *  không phải chờ đăng nhập lại mới thấy học sinh người khác vừa tạo. */
+  const loadMemberIndex = useCallback(async () => {
+    if (!supabase) return;
+    type Tally = { id?: string; group_id: string; name?: string; user_id?: string | null };
+    let counts = await supabase.from("group_members").select("id,group_id,name,user_id");
+    // Cột user_id chưa có thì vẫn đếm được học sinh, chỉ không biết tên học sinh.
+    setLinkSupported(!counts.error);
+    if (counts.error) counts = await supabase.from("group_members").select("group_id");
+    setCountsFailed(!!counts.error);
+    if (counts.error) return;
+    const tally: Record<string, number> = {};
+    const names: Record<string, string> = {};
+    // Gộp theo tên: cùng một học sinh có mặt ở nhiều nhóm chỉ hiện một lần,
+    // và bản ghi nào có gắn tài khoản thì được ưu tiên giữ lại.
+    const students = new Map<string, Student>();
+    const byGroup: Record<string, string[]> = {};
+    // Hồ sơ của chính tài khoản này: khớp theo user_id, không suy từ nhóm hay tên.
+    let mine: Member | null = null;
+    for (const row of (counts.data ?? []) as Tally[]) {
+      tally[row.group_id] = (tally[row.group_id] ?? 0) + 1;
+      if (row.id && row.user_id && row.user_id === userId) {
+        mine = { id: row.id, group_id: row.group_id, name: row.name ?? "", user_id: row.user_id };
+      }
+      if (row.name) (byGroup[row.group_id] ??= []).push(row.name);
+      if (row.user_id && row.name) names[row.user_id] = row.name;
+      const name = row.name?.trim();
+      if (!name) continue;
+      const key = name.toLowerCase();
+      const seen = students.get(key);
+      if (!seen || (!seen.user_id && row.user_id)) students.set(key, { name, user_id: row.user_id ?? null });
+    }
+    setMemberCounts(tally);
+    setStudentNames(names);
+    setKnownStudents([...students.values()]);
+    setGroupStudentNames(byGroup);
+    setSelfMember(mine);
+  }, [userId]);
+
   const loadGroups = useCallback(async () => {
     if (!supabase) return;
     setGroupsLoading(true);
@@ -235,35 +277,8 @@ export default function VioEduApp() {
     const list = (data ?? []) as Group[];
     setGroups(list);
     setGroupId((prev) => (prev && list.some((g) => g.id === prev) ? prev : list[0]?.id ?? ""));
-    type Tally = { group_id: string; name?: string; user_id?: string | null };
-    let counts = await supabase.from("group_members").select("group_id,name,user_id");
-    // Cột user_id chưa có thì vẫn đếm được học sinh, chỉ không biết tên học sinh.
-    setLinkSupported(!counts.error);
-    if (counts.error) counts = await supabase.from("group_members").select("group_id");
-    setCountsFailed(!!counts.error);
-    if (!counts.error) {
-      const tally: Record<string, number> = {};
-      const names: Record<string, string> = {};
-      // Gộp theo tên: cùng một học sinh có mặt ở nhiều nhóm chỉ hiện một lần,
-      // và bản ghi nào có gắn tài khoản thì được ưu tiên giữ lại.
-      const students = new Map<string, Student>();
-      const byGroup: Record<string, string[]> = {};
-      for (const row of (counts.data ?? []) as Tally[]) {
-        tally[row.group_id] = (tally[row.group_id] ?? 0) + 1;
-        if (row.name) (byGroup[row.group_id] ??= []).push(row.name);
-        if (row.user_id && row.name) names[row.user_id] = row.name;
-        const name = row.name?.trim();
-        if (!name) continue;
-        const key = name.toLowerCase();
-        const seen = students.get(key);
-        if (!seen || (!seen.user_id && row.user_id)) students.set(key, { name, user_id: row.user_id ?? null });
-      }
-      setMemberCounts(tally);
-      setStudentNames(names);
-      setKnownStudents([...students.values()]);
-      setGroupStudentNames(byGroup);
-    }
-  }, []);
+    await loadMemberIndex();
+  }, [loadMemberIndex]);
 
   const loadProfiles = useCallback(async () => {
     if (!supabase) return;
@@ -428,7 +443,7 @@ export default function VioEduApp() {
         // Bước 2: nhóm vừa tạo còn rỗng, nên mở thẳng ô thêm học sinh thay vì
         // bắt người dùng tự tìm đường sang tab Học sinh.
         setTab("people");
-        setMemberForm({ id: null, name: "", step2: true });
+        openAddStudent(true);
       }
       toast(`Đã tạo nhóm "${name}"`);
     } else {
@@ -546,7 +561,7 @@ export default function VioEduApp() {
     // Nhớ theo từng tài khoản, để lần mở sau không hỏi lại.
     try { localStorage.setItem("vioedu.welcome." + userId, "1"); } catch {}
     setTab("people");
-    setMemberForm({ id: null, name: "" });
+    openAddStudent();
   };
 
   // ---- members ------------------------------------------------------------
@@ -589,6 +604,24 @@ export default function VioEduApp() {
     // Chọn xong là xong: đóng luôn để thấy học sinh vừa thêm trong danh sách.
     setMemberForm(null);
     toast(`Đã thêm ${st.name} vào nhóm`);
+  };
+
+  /** Mở ô thêm học sinh và quét lại danh sách: học sinh do người khác vừa tạo
+   *  phải có mặt ngay, không đợi tải lại trang. */
+  const openAddStudent = (step2 = false) => {
+    setMemberForm({ id: null, name: "", step2: step2 || undefined });
+    void loadMemberIndex();
+  };
+
+  /** Mở hồ sơ học sinh của chính tài khoản này, dùng lại sheet Chi tiết học
+   *  sinh và khoá theo id hàng group_members chứ không theo tên hay email. */
+  const openSelfProfile = () => {
+    if (!selfMember) return;
+    setShowAccount(false);
+    setTab("people");
+    // Hồ sơ có thể nằm ở nhóm khác; đổi nhóm để lịch học trong sheet là của đúng nhóm đó.
+    if (selfMember.group_id !== groupId) setGroupId(selfMember.group_id);
+    setStudentDetail(selfMember);
   };
 
   const openMove = (m: Member) => {
@@ -923,10 +956,16 @@ export default function VioEduApp() {
                 <button
                   onClick={() => setShowGroupPicker(true)}
                   aria-haspopup="dialog"
+                  aria-label={`Nhóm hiện tại: ${currentGroup?.name ?? "chưa chọn"}. Chọn nhóm khác.`}
                   className="-ml-2 mt-1 flex min-h-[44px] w-full items-center gap-1.5 rounded-2xl px-2 text-left transition hover:bg-white/10"
                 >
                   <span className="min-w-0 truncate text-2xl font-extrabold">{currentGroup?.name ?? "Chọn nhóm"}</span>
                   <ChevronDown size={20} className="shrink-0 text-indigo-200" />
+                  {groups.length > 1 && (
+                    <span className="shrink-0 rounded-full bg-white/15 px-2 py-0.5 text-[11px] font-bold text-indigo-100">
+                      {groups.length} nhóm
+                    </span>
+                  )}
                 </button>
               ) : (
                 <h1 className="mt-1 truncate text-2xl font-extrabold">{TAB_TITLE[tab]}</h1>
@@ -1070,7 +1109,7 @@ export default function VioEduApp() {
                   ) : members.length === 0 ? (
                     <EmptyState icon={<UsersRound size={22} />} title="Nhóm chưa có học sinh"
                       hint="Thêm học sinh trước khi lên lịch học."
-                      action={<button onClick={() => { setTab("people"); setMemberForm({ id: null, name: "" }); }} className={primaryBtn}>Thêm học sinh</button>} />
+                      action={<button onClick={() => { setTab("people"); openAddStudent(); }} className={primaryBtn}>Thêm học sinh</button>} />
                   ) : daily.length === 0 ? (
                     <EmptyState icon={<CalendarDays size={22} />}
                       title={dateKey(selectedDate) === dateKey(today) ? "Không có lịch học hôm nay" : "Không có lịch học ngày này"}
@@ -1127,12 +1166,18 @@ export default function VioEduApp() {
                     {/* Same sheet as the Lịch header, so switching groups behaves
                         identically wherever it is offered. */}
                     <button onClick={() => setShowGroupPicker(true)} aria-haspopup="dialog"
+                      aria-label={`Nhóm hiện tại: ${currentGroup?.name ?? "chưa chọn"}. Chọn nhóm khác.`}
                       className="-ml-2 flex min-h-[44px] min-w-0 items-center gap-1 rounded-2xl px-2 font-bold text-slate-800 transition hover:bg-slate-200/60">
                       <span className="truncate">{currentGroup?.name ?? "Chọn nhóm"}</span>
                       <ChevronDown size={18} className="shrink-0 text-slate-500" />
+                      {groups.length > 1 && (
+                        <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-bold text-slate-500">
+                          {groups.length} nhóm
+                        </span>
+                      )}
                     </button>
                     {members.length > 0 && (
-                      <button onClick={() => setMemberForm({ id: null, name: "" })} aria-label="Thêm học sinh"
+                      <button onClick={() => openAddStudent()} aria-label="Thêm học sinh"
                         className="flex min-h-[44px] shrink-0 items-center gap-1 rounded-2xl bg-indigo-50 px-3 font-bold text-indigo-700 transition hover:bg-indigo-100">
                         <Plus size={17} />Thêm
                       </button>
@@ -1144,7 +1189,7 @@ export default function VioEduApp() {
                     <EmptyState icon={<UsersRound size={22} />} title="Chưa có học sinh"
                       hint="Thêm học sinh để bắt đầu lên lịch."
                       action={
-                        <button onClick={() => setMemberForm({ id: null, name: "" })} className={primaryBtn}>
+                        <button onClick={() => openAddStudent()} className={primaryBtn}>
                           <Plus size={18} className="mr-1 inline" />Thêm học sinh
                         </button>
                       } />
@@ -1199,7 +1244,7 @@ export default function VioEduApp() {
                     <EmptyState icon={<UsersRound size={22} />} title="Nhóm chưa có học sinh"
                       hint="Thêm học sinh rồi lên lịch học để theo dõi tiến độ tại đây."
                       action={
-                        <button onClick={() => { setTab("people"); setMemberForm({ id: null, name: "" }); }} className={primaryBtn}>
+                        <button onClick={() => { setTab("people"); openAddStudent(); }} className={primaryBtn}>
                           <Plus size={18} className="mr-1 inline" />Thêm học sinh
                         </button>
                       } />
@@ -1358,6 +1403,12 @@ export default function VioEduApp() {
         </div>
         <div className="my-3 h-px bg-slate-200" />
         <div className="space-y-1">
+          {selfMember && (
+            <button onClick={openSelfProfile}
+              className="flex min-h-[52px] w-full items-center gap-3 rounded-2xl px-3 font-bold text-slate-700 transition hover:bg-slate-100">
+              <User size={18} className="text-slate-400" />Hồ sơ học sinh
+            </button>
+          )}
           <button onClick={() => { setShowAccount(false); setTab("settings"); }}
             className="flex min-h-[52px] w-full items-center gap-3 rounded-2xl px-3 font-bold text-slate-700 transition hover:bg-slate-100">
             <Settings size={18} className="text-slate-400" />Cài đặt
@@ -1426,6 +1477,11 @@ export default function VioEduApp() {
               <p className="mb-2 rounded-2xl bg-amber-50 px-3 py-3 text-sm text-amber-800">
                 Chưa đọc được danh sách tài khoản. Hãy chạy supabase-profiles.sql trong Supabase → SQL Editor.
                 <span className="mt-1 block break-words text-xs text-amber-700">{profilesError}</span>
+              </p>
+            )}
+            {members.length > 0 && (
+              <p className="mb-2 rounded-2xl bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                Đã trong nhóm: <span className="text-slate-600">{members.map((m) => m.name).join(", ")}</span>
               </p>
             )}
             {studentOptions.length === 0 ? (
