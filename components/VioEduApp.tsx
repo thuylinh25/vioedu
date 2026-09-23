@@ -185,7 +185,7 @@ export default function VioEduApp() {
   /** false khi cơ sở dữ liệu chưa có group_members.user_id. */
   const [linkSupported, setLinkSupported] = useState(true);
   const [onboardDone, setOnboardDone] = useState(false);
-  const [onboard, setOnboard] = useState<{ name: string; groupId: string }>({ name: "", groupId: "" });
+  const [onboard, setOnboard] = useState<{ name: string; groupId: string; touched?: boolean }>({ name: "", groupId: "" });
   const [onboardError, setOnboardError] = useState("");
   const [sessions, setSessions] = useState<Session[]>([]);
   const [memberCounts, setMemberCounts] = useState<Record<string, number>>({});
@@ -534,7 +534,7 @@ export default function VioEduApp() {
     setConfirm({
       title: `Xóa nhóm "${target.name}"?`,
       body: count > 0
-        ? `${count} học sinh sẽ rời khỏi nhóm này và lịch học của họ trong nhóm sẽ bị xóa. Hồ sơ và tên của các em được giữ lại, nên thêm vào nhóm khác lúc nào cũng được. Không thể hoàn tác.`
+        ? `Hồ sơ và tên của ${count} học sinh được giữ lại, thêm vào nhóm khác lúc nào cũng được. Thứ bị xóa là nhóm này và lịch học của các em trong nhóm. Không thể hoàn tác.`
         : "Nhóm này không còn học sinh nào. Lịch học của nhóm sẽ bị xóa. Không thể hoàn tác.",
       confirmLabel: count > 0 ? "Xóa nhóm, giữ hồ sơ" : "Xóa nhóm",
       onConfirm: async () => {
@@ -587,7 +587,7 @@ export default function VioEduApp() {
   /** Màn chào lần đầu: đăng ký tên con và chọn nhóm cho con. */
   const submitOnboarding = async (force = false) => {
     if (!supabase || busy) return; // busy chặn bấm liên tiếp tạo hai học sinh
-    const name = onboard.name.trim();
+    const name = (onboard.touched ? onboard.name : onboard.name || savedStudentName).trim();
     if (!name) { setOnboardError("Hãy nhập tên học sinh."); return; }
     const gid = onboard.groupId || groups[0]?.id || "";
     if (!gid) { setOnboardError("Hãy chọn hoặc tạo một nhóm học."); return; }
@@ -963,18 +963,28 @@ export default function VioEduApp() {
   // Lần đầu đăng nhập: tài khoản chưa gắn với học sinh nào. Hỏi ngay học sinh
   // đầu tiên, thay vì thả thẳng vào một màn lịch trống không rõ phải làm gì.
   const onboardGroup = onboard.groupId || groups[0]?.id || "";
+  const savedStudentName =
+    studentNames[userId] ||
+    tableStudents.find((x) => x.user_id === userId)?.name ||
+    accountStudentName(profiles.find((x) => x.id === userId) ?? { id: "", email: userEmail || null, full_name: null, avatar_url: null });
+  const onboardName = onboard.touched ? onboard.name : onboard.name || savedStudentName;
   if (linkSupported && indexReady && !onboardDone && !groupsLoading && !studentNames[userId]) {
     return (
       <div className="grid min-h-screen place-items-center overflow-y-auto bg-gradient-to-br from-slate-100 via-slate-50 to-indigo-50 p-5">
         <div className="w-full max-w-sm rounded-[28px] bg-white p-6 shadow-xl sm:p-8">
           <p className="text-xs font-bold uppercase tracking-[.2em] text-indigo-500">VioEdu</p>
-          <h1 className="mt-2 text-2xl font-extrabold">Thiết lập hồ sơ học sinh</h1>
+          <h1 className="mt-2 text-2xl font-extrabold">
+            {savedStudentName ? "Chọn nhóm học" : "Thiết lập hồ sơ học sinh"}
+          </h1>
+          {savedStudentName && (
+            <p className="mt-1 text-sm text-slate-500">Hồ sơ của {savedStudentName} vẫn còn, chỉ cần chọn nhóm để tiếp tục.</p>
+          )}
 
           <div className="mt-6 space-y-4">
             <label className="block">
               <span className="text-sm font-bold">Tên học sinh</span>
-              <input autoFocus value={onboard.name}
-                onChange={(e) => { setOnboard((f) => ({ ...f, name: e.target.value })); if (onboardError) setOnboardError(""); }}
+              <input autoFocus value={onboardName}
+                onChange={(e) => { setOnboard((f) => ({ ...f, name: e.target.value, touched: true })); if (onboardError) setOnboardError(""); }}
                 onKeyDown={(e) => { if (e.key === "Enter") void submitOnboarding(); }}
                 className={`mt-1 ${field}`} placeholder="Ví dụ: Đỗ An Nguyên" />
               {onboardError && <span className="mt-1 block text-sm text-red-600">{onboardError}</span>}
@@ -1759,7 +1769,7 @@ export default function VioEduApp() {
 
       <Sheet open={!!groupDelete} title={`Xóa nhóm "${groupDelete?.group.name ?? ""}"`} onClose={() => setGroupDelete(null)}>
         <p className="text-sm leading-relaxed text-slate-600">
-          Nhóm này còn <b>{memberCounts[groupDelete?.group.id ?? ""] ?? 0} học sinh</b>. Chuyển họ sang nhóm khác để giữ cả lịch học, hoặc xóa nhóm luôn — hồ sơ các em vẫn còn, chỉ mất lịch học trong nhóm này.
+          Nhóm này còn <b>{memberCounts[groupDelete?.group.id ?? ""] ?? 0} học sinh</b>. Hồ sơ các em được giữ lại trong cả hai cách dưới đây; khác nhau ở chỗ lịch học trong nhóm này còn hay mất.
         </p>
         <label className="mt-4 block">
           <span className="text-sm font-bold">Chuyển học sinh sang nhóm</span>
@@ -1778,7 +1788,7 @@ export default function VioEduApp() {
         <button disabled={busy}
           onClick={() => { const g = groupDelete!.group; setGroupDelete(null); confirmDeleteGroup(g); }}
           className="min-h-[48px] w-full rounded-2xl bg-red-50 px-4 font-bold text-red-600 transition hover:bg-red-100 disabled:opacity-50">
-          Xóa nhóm, giữ lại hồ sơ học sinh
+          Xóa nhóm, giữ hồ sơ
         </button>
       </Sheet>
 
