@@ -165,8 +165,10 @@ export default function VioEduApp() {
   /** true khi lần quét group_members đã xong. Trước đó chưa biết tài khoản này
    *  đã có hồ sơ học sinh hay chưa, nên chưa được phép hỏi lại. */
   const [indexReady, setIndexReady] = useState(false);
-  /** Các hồ sơ học sinh gắn trực tiếp với tài khoản đang đăng nhập. */
-  const [selfMembers, setSelfMembers] = useState<Member[]>([]);
+  /** Mọi hàng group_members đã gắn tài khoản, của mọi nhóm. Lọc ra hồ sơ của
+   *  người đang đăng nhập lúc render, chứ không lọc sẵn lúc tải: loadGroups
+   *  chạy ngay khi phiên vừa về, khi userId trong closure vẫn còn rỗng. */
+  const [linkedMembers, setLinkedMembers] = useState<Member[]>([]);
   /** false khi cơ sở dữ liệu chưa có group_members.user_id. */
   const [linkSupported, setLinkSupported] = useState(true);
   const [onboardDone, setOnboardDone] = useState(false);
@@ -211,6 +213,7 @@ export default function VioEduApp() {
   const currentGroup = groups.find((g) => g.id === groupId) ?? null;
   // Hồ sơ học sinh của chính tài khoản này, và (các) nhóm chứa nó. Cả lối tắt
   // trên menu avatar lẫn nhãn "Nhóm của bạn" đều đọc từ đây, nên không thể lệch nhau.
+  const selfMembers = linkedMembers.filter((m) => m.user_id === userId);
   const selfMember = selfMembers[0] ?? null;
   const selfGroupIds = new Set(selfMembers.map((m) => m.group_id));
   // Tên hiển thị của tài khoản: nếu tài khoản này chính là một học sinh thì lấy
@@ -256,12 +259,12 @@ export default function VioEduApp() {
     // và bản ghi nào có gắn tài khoản thì được ưu tiên giữ lại.
     const students = new Map<string, Student>();
     const byGroup: Record<string, string[]> = {};
-    // Hồ sơ của chính tài khoản này: khớp theo user_id, không suy từ nhóm hay tên.
-    const mine: Member[] = [];
+    // Mọi hồ sơ đã gắn tài khoản; ai là "của tôi" thì để lúc render quyết định.
+    const linked: Member[] = [];
     for (const row of (counts.data ?? []) as Tally[]) {
       tally[row.group_id] = (tally[row.group_id] ?? 0) + 1;
-      if (row.id && row.user_id && row.user_id === userId) {
-        mine.push({ id: row.id, group_id: row.group_id, name: row.name ?? "", user_id: row.user_id });
+      if (row.id && row.user_id) {
+        linked.push({ id: row.id, group_id: row.group_id, name: row.name ?? "", user_id: row.user_id });
       }
       if (row.name) (byGroup[row.group_id] ??= []).push(row.name);
       if (row.user_id && row.name) names[row.user_id] = row.name;
@@ -275,9 +278,9 @@ export default function VioEduApp() {
     setStudentNames(names);
     setKnownStudents([...students.values()]);
     setGroupStudentNames(byGroup);
-    setSelfMembers(mine);
+    setLinkedMembers(linked);
     setIndexReady(true);
-  }, [userId]);
+  }, []);
 
   const loadGroups = useCallback(async () => {
     if (!supabase) return;
@@ -360,7 +363,7 @@ export default function VioEduApp() {
       if (loadedUser.current === (u?.id ?? null)) return;
       loadedUser.current = u?.id ?? null;
       if (u) { void loadGroups(); void loadProfiles(); }
-      else { setGroups([]); setGroupId(""); setMembers([]); setSessions([]); setProfiles([]); setProfilesError(""); setStudentNames({}); setKnownStudents([]); setSelfMembers([]); setIndexReady(false); setGroupsLoading(false); }
+      else { setGroups([]); setGroupId(""); setMembers([]); setSessions([]); setProfiles([]); setProfilesError(""); setStudentNames({}); setKnownStudents([]); setLinkedMembers([]); setIndexReady(false); setGroupsLoading(false); }
     };
     supabase.auth.getSession().then(({ data }) => apply(data.session));
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
