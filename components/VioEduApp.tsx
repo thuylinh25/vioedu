@@ -491,9 +491,9 @@ export default function VioEduApp() {
     setConfirm({
       title: `Xóa nhóm "${target.name}"?`,
       body: count > 0
-        ? `${count} học sinh trong nhóm này và toàn bộ lịch học của họ sẽ bị xóa vĩnh viễn. Không thể hoàn tác.`
+        ? `Hồ sơ của ${count} học sinh trong nhóm và lịch học của họ sẽ bị xóa vĩnh viễn. Tài khoản đăng nhập của các em không bị xóa — các em vẫn đăng nhập được và có thể thêm lại vào nhóm khác. Không thể hoàn tác.`
         : "Nhóm này không còn học sinh nào. Lịch học của nhóm sẽ bị xóa. Không thể hoàn tác.",
-      confirmLabel: count > 0 ? "Xóa cả học sinh" : "Xóa nhóm",
+      confirmLabel: count > 0 ? "Xóa nhóm và hồ sơ" : "Xóa nhóm",
       onConfirm: async () => {
         if (!supabase) return;
         setConfirmBusy(true);
@@ -1687,7 +1687,7 @@ export default function VioEduApp() {
 
       <Sheet open={!!groupDelete} title={`Xóa nhóm "${groupDelete?.group.name ?? ""}"`} onClose={() => setGroupDelete(null)}>
         <p className="text-sm leading-relaxed text-slate-600">
-          Nhóm này còn <b>{memberCounts[groupDelete?.group.id ?? ""] ?? 0} học sinh</b>. Chuyển họ sang nhóm khác để giữ lại cùng lịch học, hoặc xóa tất cả.
+          Nhóm này còn <b>{memberCounts[groupDelete?.group.id ?? ""] ?? 0} học sinh</b>. Chuyển họ sang nhóm khác để giữ lại cùng lịch học, hoặc xóa hồ sơ của họ trong nhóm này. Tài khoản đăng nhập của các em không bị xóa trong cả hai trường hợp.
         </p>
         <label className="mt-4 block">
           <span className="text-sm font-bold">Chuyển học sinh sang nhóm</span>
@@ -1706,7 +1706,7 @@ export default function VioEduApp() {
         <button disabled={busy}
           onClick={() => { const g = groupDelete!.group; setGroupDelete(null); confirmDeleteGroup(g); }}
           className="min-h-[48px] w-full rounded-2xl bg-red-50 px-4 font-bold text-red-600 transition hover:bg-red-100 disabled:opacity-50">
-          Xóa nhóm cùng toàn bộ học sinh
+          Xóa nhóm và hồ sơ học sinh trong nhóm
         </button>
       </Sheet>
 
