@@ -979,9 +979,6 @@ export default function VioEduApp() {
           <h1 className="mt-2 text-2xl font-extrabold">
             {existingProfileName ? "Chọn nhóm học" : "Thiết lập hồ sơ học sinh"}
           </h1>
-          {existingProfileName && (
-            <p className="mt-1 text-sm text-slate-500">Hồ sơ của {existingProfileName} vẫn còn, chỉ cần chọn nhóm để tiếp tục.</p>
-          )}
 
           <div className="mt-6 space-y-4">
             <label className="block">
