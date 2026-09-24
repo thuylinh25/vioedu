@@ -963,9 +963,12 @@ export default function VioEduApp() {
   // Lần đầu đăng nhập: tài khoản chưa gắn với học sinh nào. Hỏi ngay học sinh
   // đầu tiên, thay vì thả thẳng vào một màn lịch trống không rõ phải làm gì.
   const onboardGroup = onboard.groupId || groups[0]?.id || "";
+  // Hồ sơ thật đã có từ trước (trong nhóm hoặc bảng students). Tên lấy từ tài
+  // khoản Google chỉ để điền sẵn ô, không được coi là "hồ sơ vẫn còn".
+  const existingProfileName =
+    studentNames[userId] || tableStudents.find((x) => x.user_id === userId)?.name || "";
   const savedStudentName =
-    studentNames[userId] ||
-    tableStudents.find((x) => x.user_id === userId)?.name ||
+    existingProfileName ||
     accountStudentName(profiles.find((x) => x.id === userId) ?? { id: "", email: userEmail || null, full_name: null, avatar_url: null });
   const onboardName = onboard.touched ? onboard.name : onboard.name || savedStudentName;
   if (linkSupported && indexReady && !onboardDone && !groupsLoading && !studentNames[userId]) {
@@ -974,10 +977,10 @@ export default function VioEduApp() {
         <div className="w-full max-w-sm rounded-[28px] bg-white p-6 shadow-xl sm:p-8">
           <p className="text-xs font-bold uppercase tracking-[.2em] text-indigo-500">VioEdu</p>
           <h1 className="mt-2 text-2xl font-extrabold">
-            {savedStudentName ? "Chọn nhóm học" : "Thiết lập hồ sơ học sinh"}
+            {existingProfileName ? "Chọn nhóm học" : "Thiết lập hồ sơ học sinh"}
           </h1>
-          {savedStudentName && (
-            <p className="mt-1 text-sm text-slate-500">Hồ sơ của {savedStudentName} vẫn còn, chỉ cần chọn nhóm để tiếp tục.</p>
+          {existingProfileName && (
+            <p className="mt-1 text-sm text-slate-500">Hồ sơ của {existingProfileName} vẫn còn, chỉ cần chọn nhóm để tiếp tục.</p>
           )}
 
           <div className="mt-6 space-y-4">
